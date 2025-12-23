@@ -18,6 +18,8 @@ pipeline {
             agent { label 'fw-build' }   // 🚨 build ONLY here
             steps {
                 sh '''
+                    export ESPRESSIF_HOME=/home/jenkins/.espressif
+                    source /opt/esp/idf/export.sh
                     idf.py set-target esp32
                     idf.py build
                     cp build/*.bin ${FW_ARTIFACT}
