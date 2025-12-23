@@ -1,5 +1,7 @@
 # PicoPiece--ATS_Center-Ats-fw-esp32-demo
 
+# This firmware exists solely to demonstrate automated hardware testing and is not intended to be a production product.
+
 ats-fw-esp32-demo/
 ├── README.md
 ├── main/
