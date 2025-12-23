@@ -98,7 +98,9 @@ EOF
             echo "❌ Firmware validation failed"
         }
         always {
-            archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+            node('fw-build') {
+                archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+            }
         }
     }
 }
