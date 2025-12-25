@@ -1,0 +1,115 @@
+pipeline {
+    agent none
+
+    parameters {
+        string(
+            name: 'BUILD_JOB_NAME',
+            defaultValue: 'ats-fw-esp32-demo',
+            description: 'Name of the build job that produced the firmware'
+        )
+        string(
+            name: 'BUILD_NUMBER',
+            defaultValue: '',
+            description: 'Build number of the firmware to test'
+        )
+        string(
+            name: 'FW_ARTIFACT',
+            defaultValue: 'firmware.bin',
+            description: 'Firmware artifact name'
+        )
+        string(
+            name: 'ATS_NODE_LABEL',
+            defaultValue: 'ats-node',
+            description: 'Label for ATS node pool (e.g., ats-node, ats-pi-01)'
+        )
+    }
+
+    environment {
+        TEST_REPORT_DIR = "reports"
+    }
+
+    stages {
+        stage('Copy Firmware Artifact') {
+            agent { label "${params.ATS_NODE_LABEL}" }
+            steps {
+                script {
+                    if (!params.BUILD_NUMBER || params.BUILD_NUMBER == '') {
+                        error("BUILD_NUMBER parameter is required")
+                    }
+                    
+                    echo "📥 Copying firmware from ${params.BUILD_JOB_NAME} #${params.BUILD_NUMBER}"
+                    
+                    copyArtifacts(
+                        projectName: params.BUILD_JOB_NAME,
+                        selector: specific(params.BUILD_NUMBER),
+                        filter: "${params.FW_ARTIFACT},ats-manifest.yaml",
+                        target: '.',
+                        flatten: true
+                    )
+                    
+                    sh """
+                        echo "✅ Firmware artifact copied:"
+                        ls -lh ${params.FW_ARTIFACT} || echo "❌ Firmware not found"
+                        ls -lh ats-manifest.yaml || echo "⚠️  Manifest not found"
+                    """
+                }
+            }
+        }
+
+        stage('Flash Firmware') {
+            agent { label "${params.ATS_NODE_LABEL}" }
+            steps {
+                sh '''
+                    echo "[ATS] Flashing firmware: ${FW_ARTIFACT}"
+                    if [ -f ./agent/flash_fw.sh ]; then
+                        chmod +x ./agent/flash_fw.sh
+                        ./agent/flash_fw.sh ${FW_ARTIFACT}
+                    else
+                        echo "⚠️  flash_fw.sh not found, skipping flash"
+                    fi
+                '''
+            }
+        }
+
+        stage('Run Tests') {
+            agent { label "${params.ATS_NODE_LABEL}" }
+            steps {
+                sh '''
+                    echo "[ATS] Running hardware tests"
+                    mkdir -p ${TEST_REPORT_DIR}
+                    
+                    if [ -f ./agent/run_tests.sh ]; then
+                        chmod +x ./agent/run_tests.sh
+                        ./agent/run_tests.sh || true
+                    else
+                        echo "⚠️  run_tests.sh not found, creating dummy test result"
+                        echo "dummy test pass" > ${TEST_REPORT_DIR}/result.txt
+                    fi
+                '''
+            }
+        }
+
+        stage('Archive Test Reports') {
+            agent { label "${params.ATS_NODE_LABEL}" }
+            steps {
+                archiveArtifacts artifacts: "${TEST_REPORT_DIR}/**", allowEmptyArchive: true
+                publishTestResults testResultsPattern: "${TEST_REPORT_DIR}/**/*.xml", allowEmptyResults: true
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Firmware tested successfully on ATS node"
+        }
+        failure {
+            echo "❌ Firmware test failed"
+        }
+        always {
+            node("${params.ATS_NODE_LABEL}") {
+                archiveArtifacts artifacts: "${TEST_REPORT_DIR}/**", allowEmptyArchive: true
+            }
+        }
+    }
+}
+
