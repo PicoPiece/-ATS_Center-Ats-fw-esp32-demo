@@ -59,7 +59,7 @@ pipeline {
                     echo "📥 Copying firmware artifacts from ${params.BUILD_JOB_NAME} #${params.BUILD_NUMBER}"
                     copyArtifacts(
                         projectName: params.BUILD_JOB_NAME,
-                        selector: specific(params.BUILD_NUMBER),
+                        selector: specificBuild(params.BUILD_NUMBER.toInteger()),
                         filter: "*.bin,ats-manifest.yaml",
                         target: WORKSPACE_DIR,
                         flatten: true
