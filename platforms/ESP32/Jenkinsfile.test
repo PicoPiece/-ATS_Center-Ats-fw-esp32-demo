@@ -17,10 +17,15 @@ pipeline {
             defaultValue: 'raspi-ats-01',
             description: 'Label for ATS node pool (e.g., ats-node, ats-pi-01)'
         )
+        choice(
+            name: 'IMAGE_SOURCE',
+            choices: ['registry', 'build'],
+            description: 'How to get ats-node-test image: pull from registry or build on agent'
+        )
         string(
             name: 'ATS_NODE_TEST_IMAGE',
-            defaultValue: 'ats-node-test:latest',
-            description: 'Docker image name for ATS node test container'
+            defaultValue: 'ghcr.io/picopiece/ats-node-test:latest',
+            description: 'Docker image name for ATS node test container (registry or local)'
         )
         string(
             name: 'TEST_REPO_URL',
