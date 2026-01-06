@@ -88,9 +88,24 @@ pipeline {
                     
                     // Verify artifacts were copied
                     sh """
-                        echo "📦 Copied artifacts:"
-                        ls -lh ${WORKSPACE_DIR}/*.bin 2>/dev/null || echo "⚠️  No .bin files found"
-                        ls -lh ${WORKSPACE_DIR}/ats-manifest.yaml 2>/dev/null || echo "⚠️  Manifest not found"
+                        echo "📦 Verifying copied artifacts..."
+                        echo "   Workspace directory: ${WORKSPACE_DIR}"
+                        echo "   Current directory: \$(pwd)"
+                        echo ""
+                        echo "   All files in workspace:"
+                        ls -lah ${WORKSPACE_DIR}/ || true
+                        echo ""
+                        echo "   Firmware binaries:"
+                        ls -lh ${WORKSPACE_DIR}/*.bin 2>/dev/null || echo "   ⚠️  No .bin files found"
+                        echo ""
+                        echo "   Manifest file:"
+                        if [ -f ${WORKSPACE_DIR}/ats-manifest.yaml ]; then
+                            echo "   ✅ ats-manifest.yaml found"
+                            ls -lh ${WORKSPACE_DIR}/ats-manifest.yaml
+                        else
+                            echo "   ❌ ats-manifest.yaml NOT found"
+                            echo "   This will cause the test stage to fail!"
+                        fi
                         echo ""
                     """
                     
@@ -113,19 +128,30 @@ pipeline {
                         ])
                     }
                     
-                    // Verify workspace structure
+                    // Verify workspace structure and fail if manifest is missing
                     sh """
-                        echo "✅ Workspace prepared:"
-                        ls -lh ${WORKSPACE_DIR}/
+                        echo "✅ Final workspace verification:"
+                        echo "   Workspace: ${WORKSPACE_DIR}"
+                        ls -lah ${WORKSPACE_DIR}/ || true
                         echo ""
                         echo "📋 Manifest verification:"
                         if [ -f ${WORKSPACE_DIR}/ats-manifest.yaml ]; then
                             echo "✅ Manifest found:"
                             cat ${WORKSPACE_DIR}/ats-manifest.yaml
+                            echo ""
+                            echo "✅ Workspace preparation completed successfully"
                         else
-                            echo "❌ Manifest NOT found in ${WORKSPACE_DIR}/"
-                            echo "   Current directory contents:"
-                            ls -la ${WORKSPACE_DIR}/
+                            echo "❌ ERROR: Manifest NOT found in ${WORKSPACE_DIR}/"
+                            echo ""
+                            echo "   Troubleshooting:"
+                            echo "   1. Check if build job '${params.BUILD_JOB_NAME}' #${params.BUILD_NUMBER} exists"
+                            echo "   2. Verify build job archived 'ats-manifest.yaml'"
+                            echo "   3. Check Jenkins console for copyArtifacts errors"
+                            echo "   4. Verify BUILD_NUMBER parameter is correct"
+                            echo ""
+                            echo "   Current workspace contents:"
+                            ls -la ${WORKSPACE_DIR}/ || true
+                            echo ""
                             exit 1
                         fi
                     """
@@ -211,6 +237,40 @@ pipeline {
                         echo "🚀 [ATS] Running test execution container"
                         echo "📋 Image: ${params.ATS_NODE_TEST_IMAGE}"
                         echo "📁 Workspace: \$(pwd)"
+                        
+                        # Verify workspace contents before running container
+                        echo "📦 Workspace contents:"
+                        ls -lah \$(pwd)/
+                        echo ""
+                        
+                        # Verify manifest exists
+                        if [ ! -f ats-manifest.yaml ]; then
+                            echo "❌ ERROR: ats-manifest.yaml not found in workspace!"
+                            echo "   Expected path: \$(pwd)/ats-manifest.yaml"
+                            echo "   Current directory: \$(pwd)"
+                            echo "   Files in workspace:"
+                            ls -lah \$(pwd)/ || true
+                            echo ""
+                            echo "   This usually means:"
+                            echo "   1. Build job did not archive ats-manifest.yaml"
+                            echo "   2. copyArtifacts failed in Prepare Workspace stage"
+                            echo "   3. Wrong BUILD_NUMBER parameter"
+                            exit 1
+                        fi
+                        
+                        echo "✅ Manifest found: \$(pwd)/ats-manifest.yaml"
+                        echo "📋 Manifest content:"
+                        cat ats-manifest.yaml
+                        echo ""
+                        
+                        # Verify firmware binary exists
+                        FW_BIN=\$(ls *.bin 2>/dev/null | head -1)
+                        if [ -z "\$FW_BIN" ]; then
+                            echo "⚠️  Warning: No .bin firmware file found in workspace"
+                        else
+                            echo "✅ Firmware binary found: \$FW_BIN"
+                        fi
+                        echo ""
                         
                         # Create results directory
                         mkdir -p ${RESULTS_DIR}
