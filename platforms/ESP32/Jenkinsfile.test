@@ -266,10 +266,45 @@ pipeline {
                             // #region agent log
                             echo "DEBUG: Attempting public pull for: ${imageToPull}"
                             echo "DEBUG: Platform: \$(uname -m)"
+                            echo "DEBUG: Checking if image exists and is public..."
                             // #endregion
                             
+                            // Try to pull - if fails, provide clear guidance
+                            def pullScript = """
+                                PULL_OUTPUT=\$(docker pull ${imageToPull} 2>&1)
+                                PULL_EXIT=\$?
+                                echo "\$PULL_OUTPUT"
+                                
+                                if [ \$PULL_EXIT -ne 0 ]; then
+                                    echo ""
+                                    echo "❌ Public pull failed"
+                                    echo ""
+                                    echo "🔍 Error analysis:"
+                                    if echo "\$PULL_OUTPUT" | grep -q "unauthorized"; then
+                                        echo "   ✅ CONFIRMED: Image is PRIVATE (requires authentication)"
+                                        echo ""
+                                        echo "   Solutions:"
+                                        echo "   1. Make image public:"
+                                        echo "      GitHub → Packages → ats-node-test → Settings → Change visibility → Public"
+                                        echo ""
+                                        echo "   2. Use credentials:"
+                                        echo "      - Set GHCR_CREDENTIALS_ID parameter in pipeline"
+                                        echo "      - Or create credentials in Jenkins with read:packages scope"
+                                    elif echo "\$PULL_OUTPUT" | grep -q "manifest unknown"; then
+                                        echo "   ✅ CONFIRMED: Image doesn't exist or wrong tag"
+                                        echo "   Check: docker manifest inspect ${imageToPull}"
+                                    elif echo "\$PULL_OUTPUT" | grep -q "no space"; then
+                                        echo "   ✅ CONFIRMED: Disk space issue"
+                                    else
+                                        echo "   Unknown error - see output above"
+                                    fi
+                                fi
+                                
+                                exit \$PULL_EXIT
+                            """
+                            
                             def pullOutput = sh(
-                                script: "docker pull ${imageToPull} 2>&1",
+                                script: pullScript,
                                 returnStatus: true
                             )
                             pullSuccess = pullOutput == 0
@@ -278,7 +313,8 @@ pipeline {
                                 echo "✅ Image pulled successfully: ${imageToPull}"
                                 sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
                             } else {
-                                echo "❌ Public pull failed - image may be private or not exist"
+                                echo ""
+                                echo "⚠️  Cannot pull image - will fall back to building on agent"
                             }
                         }
                         
