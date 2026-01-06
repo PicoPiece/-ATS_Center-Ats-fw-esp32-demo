@@ -173,7 +173,20 @@ pipeline {
                             echo "   Architecture: \$(uname -a)"
                         """
                         
-                        def pullSuccess = sh(
+                        // Try to login to GHCR if credentials are available (optional)
+                        def ghcrCredsId = env.GHCR_CREDENTIALS_ID ?: ''
+                        def pullSuccess = false
+                        
+                        if (ghcrCredsId) {
+                            echo "🔐 Attempting to login to GHCR with credentials..."
+                            withCredentials([usernamePassword(credentialsId: ghcrCredsId, usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_TOKEN')]) {
+                                sh """
+                                    echo \$GHCR_TOKEN | docker login ghcr.io -u \$GHCR_USER --password-stdin || echo "⚠️  GHCR login failed, will try pull anyway"
+                                """
+                            }
+                        }
+                        
+                        pullSuccess = sh(
                             script: "docker pull ${params.ATS_NODE_TEST_IMAGE} 2>&1",
                             returnStatus: true
                         ) == 0
@@ -189,7 +202,7 @@ pipeline {
                                 echo ""
                                 echo "   Common reasons:"
                                 echo "   1. Image is private and requires authentication"
-                                echo "      → Setup Docker credentials in Jenkins or use 'build' option"
+                                echo "      → Setup GHCR_CREDENTIALS_ID in Jenkins or make image public"
                                 echo "   2. Image doesn't exist for this platform (\$(uname -m))"
                                 echo "      → Check registry for available platforms"
                                 echo "   3. Network/registry connectivity issue"
@@ -199,110 +212,91 @@ pipeline {
                                 echo ""
                             """
                             echo "   Falling back to build on agent..."
-                            // Fall back to build
-                            def atsNodeRepo = "${WORKSPACE_DIR}/ats-ats-node"
-                            sh """
-                                echo "🔍 Current directory: \$(pwd)"
-                                echo "🔍 WORKSPACE_DIR: ${WORKSPACE_DIR}"
-                                echo "🔍 Target repo path: ${atsNodeRepo}"
-                                echo ""
-                                
-                                if [ ! -d "${atsNodeRepo}" ]; then
-                                    echo "📦 Cloning ats-ats-node repository..."
-                                    cd ${WORKSPACE_DIR}
-                                    git clone https://github.com/PicoPiece/ats-ats-node.git || {
-                                        echo "❌ Failed to clone ats-ats-node"
+                            // Fall back to build with hotfix
+                            dir(WORKSPACE_DIR) {
+                                sh """
+                                    set -euo pipefail
+                                    echo "🔍 Current directory: \$(pwd)"
+                                    # Compute absolute workspace path
+                                    WORKSPACE_ABS=\$(pwd)
+                                    echo "🔍 WORKSPACE_ABS: \$WORKSPACE_ABS"
+                                    echo ""
+                                    
+                                    # Ensure ats-ats-node repo exists under WORKSPACE_ABS
+                                    if [ ! -d "\${WORKSPACE_ABS}/ats-ats-node" ]; then
+                                        echo "📦 Cloning ats-ats-node into \${WORKSPACE_ABS}/ats-ats-node..."
+                                        git clone https://github.com/PicoPiece/ats-ats-node.git ats-ats-node || {
+                                            echo "❌ Failed to clone ats-ats-node"
+                                            exit 1
+                                        }
+                                    else
+                                        echo "📦 ats-ats-node already exists, pulling latest..."
+                                        cd \${WORKSPACE_ABS}/ats-ats-node
+                                        git pull origin main || echo "⚠️  git pull failed, using existing code"
+                                    fi
+                                    
+                                    # Verify directory and Dockerfile
+                                    if [ -d "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test" ] && [ -f "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile" ]; then
+                                        echo "🐳 Build context ready: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test"
+                                        cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
+                                        
+                                        # Use BuildKit if available to speed up build, but fall back gracefully
+                                        export DOCKER_BUILDKIT=1 || true
+                                        echo "🧰 Building ATS node test image (allows cache)..."
+                                        docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
+                                        echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
+                                    else
+                                        echo "❌ ERROR: Dockerfile not found at expected location: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile"
+                                        echo "Repository layout:"
+                                        ls -lah \${WORKSPACE_ABS}/ats-ats-node || true
                                         exit 1
-                                    }
-                                else
-                                    echo "📦 Updating ats-ats-node repository..."
-                                    cd ${atsNodeRepo}
-                                    git pull || echo "⚠️  Git pull failed, using existing code"
-                                fi
-                                
-                                echo ""
-                                echo "🔍 Verifying repository structure after git pull:"
-                                echo "   Repo exists: \$(test -d "${atsNodeRepo}" && echo 'yes' || echo 'no')"
-                                echo "   Repo contents:"
-                                ls -lah "${atsNodeRepo}/" | head -10 || echo "   (cannot list)"
-                                echo ""
-                                echo "   Docker directory:"
-                                ls -lah "${atsNodeRepo}/docker/" 2>&1 | head -10 || echo "   (docker directory not found)"
-                                echo ""
-                                echo "   ats-node-test directory:"
-                                ls -lah "${atsNodeRepo}/docker/ats-node-test/" 2>&1 | head -10 || echo "   (ats-node-test directory not found)"
-                                echo ""
-                                
-                                if [ -d "${atsNodeRepo}/docker/ats-node-test" ] && [ -f "${atsNodeRepo}/docker/ats-node-test/Dockerfile" ]; then
-                                    echo "🐳 Building ATS node test container (fallback)..."
-                                    echo "   Using latest code from: ${atsNodeRepo}"
-                                    echo "   Entrypoint version check:"
-                                    head -20 ${atsNodeRepo}/docker/ats-node-test/entrypoint.sh | grep -E "(Step 1|CRITICAL|workspace)" || echo "   (checking entrypoint)"
-                                    echo ""
-                                    cd ${atsNodeRepo}/docker/ats-node-test
-                                    docker build --no-cache -t ${params.ATS_NODE_TEST_IMAGE} .
-                                    echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
-                                    echo ""
-                                    echo "🔍 Verifying entrypoint in built image:"
-                                    docker run --rm ${params.ATS_NODE_TEST_IMAGE} sh -c "head -30 /app/entrypoint.sh | grep -E '(Step 1|CRITICAL|workspace)' || echo 'Entrypoint check'" || true
-                                else
-                                    echo "❌ ERROR: Dockerfile not found at expected location"
-                                    echo "   Expected: ${atsNodeRepo}/docker/ats-node-test/Dockerfile"
-                                    echo "   Checking what exists:"
-                                    find "${atsNodeRepo}" -name "Dockerfile" -type f 2>&1 | head -5 || echo "   (no Dockerfile found)"
-                                    echo "   Repository structure:"
-                                    find "${atsNodeRepo}" -type d -maxdepth 3 2>&1 | head -20 || echo "   (cannot list)"
-                                    exit 1
-                                fi
-                            """
+                                    fi
+                                """
+                            }
                         }
                     } else {
                         // Option 2: Build on agent (slow, but works without registry)
                         echo "🔨 Building ATS node test container on agent..."
-                        def atsNodeRepo = "${WORKSPACE_DIR}/ats-ats-node"
-                        sh """
-                            echo "🔍 Current directory: \$(pwd)"
-                            echo "🔍 WORKSPACE_DIR: ${WORKSPACE_DIR}"
-                            echo "🔍 Target repo path: ${atsNodeRepo}"
-                            echo ""
-                            
-                            # Checkout ats-ats-node repo if not present
-                            if [ ! -d "${atsNodeRepo}" ]; then
-                                echo "📦 Cloning ats-ats-node repository..."
-                                cd ${WORKSPACE_DIR}
-                                git clone https://github.com/PicoPiece/ats-ats-node.git || {
-                                    echo "❌ Failed to clone ats-ats-node"
+                        dir(WORKSPACE_DIR) {
+                            sh """
+                                set -euo pipefail
+                                echo "🔍 Current directory: \$(pwd)"
+                                # Compute absolute workspace path
+                                WORKSPACE_ABS=\$(pwd)
+                                echo "🔍 WORKSPACE_ABS: \$WORKSPACE_ABS"
+                                echo ""
+                                
+                                # Ensure ats-ats-node repo exists under WORKSPACE_ABS
+                                if [ ! -d "\${WORKSPACE_ABS}/ats-ats-node" ]; then
+                                    echo "📦 Cloning ats-ats-node into \${WORKSPACE_ABS}/ats-ats-node..."
+                                    git clone https://github.com/PicoPiece/ats-ats-node.git ats-ats-node || {
+                                        echo "❌ Failed to clone ats-ats-node"
+                                        exit 1
+                                    }
+                                else
+                                    echo "📦 ats-ats-node already exists, pulling latest..."
+                                    cd \${WORKSPACE_ABS}/ats-ats-node
+                                    git pull origin main || echo "⚠️  git pull failed, using existing code"
+                                fi
+                                
+                                # Verify directory and Dockerfile
+                                if [ -d "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test" ] && [ -f "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile" ]; then
+                                    echo "🐳 Build context ready: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test"
+                                    cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
+                                    
+                                    # Use BuildKit if available to speed up build, but fall back gracefully
+                                    export DOCKER_BUILDKIT=1 || true
+                                    echo "🧰 Building ATS node test image (allows cache)..."
+                                    docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
+                                    echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
+                                else
+                                    echo "❌ ERROR: Dockerfile not found at expected location: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile"
+                                    echo "Repository layout:"
+                                    ls -lah \${WORKSPACE_ABS}/ats-ats-node || true
                                     exit 1
-                                }
-                            else
-                                echo "📦 Updating ats-ats-node repository..."
-                                cd ${atsNodeRepo}
-                                git pull || echo "⚠️  Git pull failed, using existing code"
-                            fi
-                            
-                            echo ""
-                            echo "🔍 Verifying repository structure:"
-                            echo "   Repo exists: \$(test -d "${atsNodeRepo}" && echo 'yes' || echo 'no')"
-                            echo "   Docker directory: \$(test -d "${atsNodeRepo}/docker" && echo 'yes' || echo 'no')"
-                            echo "   ats-node-test directory: \$(test -d "${atsNodeRepo}/docker/ats-node-test" && echo 'yes' || echo 'no')"
-                            echo "   Dockerfile: \$(test -f "${atsNodeRepo}/docker/ats-node-test/Dockerfile" && echo 'yes' || echo 'no')"
-                            echo ""
-                            
-                            # Build ats-node-test container
-                            if [ -d "${atsNodeRepo}/docker/ats-node-test" ] && [ -f "${atsNodeRepo}/docker/ats-node-test/Dockerfile" ]; then
-                                echo "🐳 Building ATS node test container..."
-                                echo "   Using latest code from: ${atsNodeRepo}"
-                                cd ${atsNodeRepo}/docker/ats-node-test
-                                docker build --no-cache -t ${params.ATS_NODE_TEST_IMAGE} .
-                                echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
-                            else
-                                echo "❌ ERROR: Dockerfile not found at expected location"
-                                echo "   Expected: ${atsNodeRepo}/docker/ats-node-test/Dockerfile"
-                                echo "   Checking what exists:"
-                                find "${atsNodeRepo}" -name "Dockerfile" -type f 2>&1 | head -5 || echo "   (no Dockerfile found)"
-                                exit 1
-                            fi
-                        """
+                                fi
+                            """
+                        }
                     }
                 }
             }
