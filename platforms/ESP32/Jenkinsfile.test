@@ -442,82 +442,114 @@ pipeline {
                             echo "   Using path as-is: \${WORKSPACE_ABS}"
                         fi
                         
-                        # CRITICAL FIX: Test mount with actual file check, not just directory listing
-                        echo "🔍 Testing volume mount with actual file access..."
-                        MOUNT_TEST=\$(docker run --rm -v "\${WORKSPACE_ABS}:/workspace" alpine:latest sh -c "test -f /workspace/ats-manifest.yaml && echo 'FILE_EXISTS' || echo 'FILE_MISSING'" 2>&1)
+                        # CRITICAL FIX for Docker-in-Docker: Use Docker volumes instead of bind mounts
+                        # When Docker runs inside a container, bind mounts from container filesystem don't work
+                        # Solution: Create a Docker volume and copy files into it
                         
-                        if echo "\$MOUNT_TEST" | grep -q "FILE_EXISTS"; then
-                            echo "✅ Mount test PASSED - manifest file is accessible in container"
+                        echo "🔍 Detected Docker-in-Docker scenario - using Docker volume instead of bind mount"
+                        echo ""
+                        
+                        # Create a named Docker volume
+                        WORKSPACE_VOLUME="jenkins-workspace-\$(date +%s)"
+                        echo "📦 Creating Docker volume: \${WORKSPACE_VOLUME}"
+                        docker volume create \${WORKSPACE_VOLUME} || {
+                            echo "❌ Failed to create Docker volume"
+                            exit 1
+                        }
+                        echo "✅ Docker volume created"
+                        echo ""
+                        
+                        # Copy files into the volume using a temporary container
+                        echo "📋 Copying workspace files into Docker volume..."
+                        docker run --rm \\
+                            -v "\${WORKSPACE_ABS}:/source:ro" \\
+                            -v \${WORKSPACE_VOLUME}:/workspace \\
+                            alpine:latest sh -c "
+                                echo 'Copying files from /source to /workspace...'
+                                cp -r /source/* /workspace/ 2>&1 || {
+                                    echo '❌ Failed to copy files'
+                                    exit 1
+                                }
+                                echo '✅ Files copied successfully'
+                                echo ''
+                                echo 'Verifying files in volume:'
+                                ls -lah /workspace/ | head -10
+                                echo ''
+                                echo 'Verifying manifest file:'
+                                test -f /workspace/ats-manifest.yaml && echo '✅ Manifest file exists' || echo '❌ Manifest file missing'
+                            " || {
+                            echo "❌ Failed to copy files into volume"
+                            docker volume rm \${WORKSPACE_VOLUME} 2>/dev/null || true
+                            exit 1
+                        }
+                        echo ""
+                        
+                        # Verify volume has files
+                        echo "🔍 Verifying volume contents..."
+                        VOLUME_TEST=\$(docker run --rm -v \${WORKSPACE_VOLUME}:/workspace alpine:latest sh -c "test -f /workspace/ats-manifest.yaml && echo 'FILE_EXISTS' || echo 'FILE_MISSING'" 2>&1)
+                        
+                        if echo "\$VOLUME_TEST" | grep -q "FILE_EXISTS"; then
+                            echo "✅ Volume test PASSED - files are accessible in volume"
                             echo "   File content preview:"
-                            docker run --rm -v "\${WORKSPACE_ABS}:/workspace" alpine:latest head -5 /workspace/ats-manifest.yaml 2>&1 || true
+                            docker run --rm -v \${WORKSPACE_VOLUME}:/workspace alpine:latest head -5 /workspace/ats-manifest.yaml 2>&1 || true
+                            echo ""
+                            echo "✅ Using Docker volume: \${WORKSPACE_VOLUME}"
+                            USE_VOLUME=true
                         else
-                            echo "❌ CRITICAL: Mount test FAILED - file not accessible!"
-                            echo "   Test output: \$MOUNT_TEST"
-                            echo ""
-                            echo "   This means Docker cannot access files from this path."
-                            echo "   Possible causes:"
-                            echo "   1. Path is inside container filesystem, not host filesystem"
-                            echo "   2. Docker socket doesn't have access to this path"
-                            echo "   3. Permission issues"
-                            echo ""
-                            echo "   Attempting alternative: Copy files to temp location on host..."
-                            
-                            # Alternative: Copy to a known host location that Docker can access
-                            # Use /tmp which should be accessible from host
-                            HOST_TMP="/tmp/jenkins-workspace-\$(date +%s)"
-                            mkdir -p "\${HOST_TMP}"
-                            echo "   Copying workspace to: \${HOST_TMP}"
-                            
-                            # Copy files with proper handling
-                            cd \${WORKSPACE_ABS}
-                            cp -r . "\${HOST_TMP}/" || {
-                                echo "   ❌ Failed to copy files"
-                                exit 1
-                            }
-                            
-                            # Verify files were copied
-                            echo "   Verifying copied files:"
-                            ls -lah "\${HOST_TMP}/" | head -10
-                            
-                            # Test mount with copied files
-                            echo "   Testing mount with copied files..."
-                            COPY_TEST=\$(docker run --rm -v "\${HOST_TMP}:/workspace" alpine:latest sh -c "test -f /workspace/ats-manifest.yaml && echo 'FILE_EXISTS' || echo 'FILE_MISSING'" 2>&1)
-                            
-                            if echo "\$COPY_TEST" | grep -q "FILE_EXISTS"; then
-                                echo "   ✅ Copy successful - files accessible in container"
-                                WORKSPACE_ABS="\${HOST_TMP}"
-                                echo "   ✅ Using alternative path: \${WORKSPACE_ABS}"
-                                echo "   ⚠️  Note: Results will need to be copied back"
-                            else
-                                echo "   ❌ Copy failed - files still not accessible"
-                                echo "   Test output: \$COPY_TEST"
-                                echo "   This indicates a deeper Docker-in-Docker issue"
-                                exit 1
-                            fi
+                            echo "❌ Volume test FAILED"
+                            echo "   Test output: \$VOLUME_TEST"
+                            docker volume rm \${WORKSPACE_VOLUME} 2>/dev/null || true
+                            exit 1
                         fi
                         echo ""
                         
                         # Run test container with workspace mount
-                        # Mount workspace FIRST, then hardware devices
+                        # Use Docker volume if we're in Docker-in-Docker scenario, otherwise use bind mount
                         echo "🚀 Running ATS test container..."
-                        echo "   Workspace mount: \${WORKSPACE_ABS} -> /workspace"
                         
-                        docker run --rm --privileged \\
-                            -v "\${WORKSPACE_ABS}:/workspace" \\
-                            -v /dev:/dev \\
-                            -v /sys/class/gpio:/sys/class/gpio:ro \\
-                            -v /dev/gpiomem:/dev/gpiomem \\
-                            -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
-                            -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
-                            ${params.ATS_NODE_TEST_IMAGE}
-                        
-                        EXIT_CODE=\$?
-                        
-                        # If we used alternative path, copy results back
-                        if [ "\${WORKSPACE_ABS}" != "\$(pwd)" ] && [ -d "\${WORKSPACE_ABS}/${RESULTS_DIR}" ]; then
-                            echo "📦 Copying results back from alternative path..."
-                            cp -r "\${WORKSPACE_ABS}/${RESULTS_DIR}"/* "\$(pwd)/${RESULTS_DIR}/" 2>/dev/null || true
-                            rm -rf "\${WORKSPACE_ABS}" 2>/dev/null || true
+                        if [ "\${USE_VOLUME}" = "true" ]; then
+                            echo "   Using Docker volume: \${WORKSPACE_VOLUME} -> /workspace"
+                            docker run --rm --privileged \\
+                                -v \${WORKSPACE_VOLUME}:/workspace \\
+                                -v /dev:/dev \\
+                                -v /sys/class/gpio:/sys/class/gpio:ro \\
+                                -v /dev/gpiomem:/dev/gpiomem \\
+                                -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
+                                -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                                ${params.ATS_NODE_TEST_IMAGE}
+                            
+                            EXIT_CODE=\$?
+                            
+                            # Copy results back from volume to workspace
+                            echo ""
+                            echo "📦 Copying results back from Docker volume..."
+                            docker run --rm \\
+                                -v \${WORKSPACE_VOLUME}:/source:ro \\
+                                -v "\$(pwd):/dest" \\
+                                alpine:latest sh -c "
+                                    if [ -d /source/${RESULTS_DIR} ]; then
+                                        cp -r /source/${RESULTS_DIR}/* /dest/${RESULTS_DIR}/ 2>&1 || echo '⚠️  Some files may not have been copied'
+                                        echo '✅ Results copied back'
+                                    else
+                                        echo '⚠️  Results directory not found in volume'
+                                    fi
+                                " || echo "⚠️  Failed to copy results back"
+                            
+                            # Cleanup volume
+                            echo "🧹 Cleaning up Docker volume..."
+                            docker volume rm \${WORKSPACE_VOLUME} 2>/dev/null || echo "⚠️  Failed to remove volume (may be in use)"
+                        else
+                            echo "   Using bind mount: \${WORKSPACE_ABS} -> /workspace"
+                            docker run --rm --privileged \\
+                                -v "\${WORKSPACE_ABS}:/workspace" \\
+                                -v /dev:/dev \\
+                                -v /sys/class/gpio:/sys/class/gpio:ro \\
+                                -v /dev/gpiomem:/dev/gpiomem \\
+                                -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
+                                -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                                ${params.ATS_NODE_TEST_IMAGE}
+                            
+                            EXIT_CODE=\$?
                         fi
                         
                         if [ \$EXIT_CODE -eq 0 ]; then
