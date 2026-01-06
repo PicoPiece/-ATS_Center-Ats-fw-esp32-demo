@@ -411,11 +411,13 @@ pipeline {
                         echo "✅ Volume mount test successful - files are accessible"
                         echo ""
                         
+                        # Mount workspace FIRST to avoid conflicts with other mounts
+                        # Then mount hardware devices
                         docker run --rm --privileged \\
+                            -v "\${WORKSPACE_ABS}:/workspace" \\
                             -v /dev:/dev \\
                             -v /sys/class/gpio:/sys/class/gpio:ro \\
                             -v /dev/gpiomem:/dev/gpiomem \\
-                            -v "\${WORKSPACE_ABS}:/workspace" \\
                             -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                             -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
                             ${params.ATS_NODE_TEST_IMAGE}
