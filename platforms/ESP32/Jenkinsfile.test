@@ -173,6 +173,14 @@ pipeline {
                             echo "   Architecture: \$(uname -a)"
                         """
                         
+                        // Use the full image name from parameter (should include registry)
+                        def imageToPull = params.ATS_NODE_TEST_IMAGE
+                        if (!imageToPull.contains('/') && !imageToPull.contains('.')) {
+                            // If no registry prefix, assume it's just the name and add default
+                            imageToPull = "ghcr.io/picopiece/${imageToPull}"
+                            echo "   ⚠️  Warning: Image name missing registry prefix, using: ${imageToPull}"
+                        }
+                        
                         // Try to login to GHCR if credentials are available (optional)
                         def ghcrCredsId = env.GHCR_CREDENTIALS_ID ?: ''
                         def pullSuccess = false
@@ -187,12 +195,14 @@ pipeline {
                         }
                         
                         pullSuccess = sh(
-                            script: "docker pull ${params.ATS_NODE_TEST_IMAGE} 2>&1",
+                            script: "docker pull ${imageToPull} 2>&1",
                             returnStatus: true
                         ) == 0
                         
                         if (pullSuccess) {
                             echo "✅ Image pulled successfully: ${imageToPull}"
+                            // Tag with the expected name for consistency
+                            sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
                         } else {
                             echo "⚠️  Failed to pull image from registry"
                             echo ""
