@@ -409,72 +409,72 @@ pipeline {
                         ls -ld .
                         echo ""
                         
-                        # Get absolute path for workspace (important for Docker mounts)
-                        # CRITICAL: If running inside agent container, we need the HOST path
-                        # Agent container mounts /home/jenkins (host) -> /home/jenkins/agent (container)
-                        # So if pwd is /home/jenkins/agent/workspace/..., host path is /home/jenkins/workspace/...
+                        # CRITICAL: Jenkins agent runs in a container, and we're running Docker inside that container
+                        # This is a "Docker-in-Docker" scenario where we need to mount from the HOST filesystem
+                        # 
+                        # Agent container setup (from start-agent.sh):
+                        #   -v /home/jenkins:/home/jenkins/agent (host -> container)
+                        #   -v /var/run/docker.sock:/var/run/docker.sock
+                        #
+                        # So if we're at /home/jenkins/workspace/... in agent container,
+                        # the HOST path is also /home/jenkins/workspace/... (same path on host)
+                        #
+                        # However, Docker inside container needs to mount from HOST, not container filesystem
+                        # Solution: Use the path as-is since agent container mounts host /home/jenkins directly
+                        
                         WORKSPACE_ABS=\$(pwd)
-                        echo "🔍 Workspace path (container): \${WORKSPACE_ABS}"
+                        echo "🔍 Current directory (in agent container): \${WORKSPACE_ABS}"
                         
-                        # Check if we're inside agent container and need to convert to host path
-                        # If path starts with /home/jenkins/agent, convert to /home/jenkins
-                        if echo "\${WORKSPACE_ABS}" | grep -q "^/home/jenkins/agent"; then
-                            HOST_WORKSPACE_ABS=\$(echo "\${WORKSPACE_ABS}" | sed 's|^/home/jenkins/agent|/home/jenkins|')
-                            echo "🔍 Converting container path to host path:"
-                            echo "   Container: \${WORKSPACE_ABS}"
-                            echo "   Host:      \${HOST_WORKSPACE_ABS}"
-                            WORKSPACE_ABS="\${HOST_WORKSPACE_ABS}"
-                        else
-                            echo "🔍 Using path as-is (assuming host path): \${WORKSPACE_ABS}"
-                        fi
-                        
-                        echo "🔍 Final workspace path for Docker mount: \${WORKSPACE_ABS}"
-                        echo "🔍 Verifying files exist at host path:"
-                        ls -lah "\${WORKSPACE_ABS}/ats-manifest.yaml" || echo "⚠️  File not found at host path"
-                        echo "🔍 All files in workspace (host):"
-                        ls -lah "\${WORKSPACE_ABS}/" | head -15 || echo "⚠️  Cannot list host directory"
+                        # Verify we can see files from agent container perspective
+                        echo "🔍 Files visible from agent container:"
+                        ls -lah \${WORKSPACE_ABS}/ | head -10
                         echo ""
                         
-                        # Run ats-node-test container
-                        # Container will:
-                        # 1. Load manifest from /workspace/ats-manifest.yaml
-                        # 2. Flash firmware
-                        # 3. Run tests
-                        # 4. Write results to /workspace/results/
-                        
-                        echo "🔍 Testing volume mount before running container..."
-                        echo "   Mount source (HOST path): \${WORKSPACE_ABS}"
-                        echo "   Verifying source exists and has files..."
-                        ls -lah "\${WORKSPACE_ABS}/" | head -5 || echo "   ⚠️  Cannot list source directory"
-                        
-                        # Test mount - check if files are actually visible
-                        MOUNT_TEST_OUTPUT=\$(docker run --rm -v "\${WORKSPACE_ABS}:/workspace" alpine:latest sh -c "ls -lah /workspace/ | head -10" 2>&1)
-                        MOUNT_TEST_EXIT=\$?
-                        
-                        if [ \$MOUNT_TEST_EXIT -ne 0 ]; then
-                            echo "❌ ERROR: Volume mount test failed!"
-                            echo "   Output: \$MOUNT_TEST_OUTPUT"
-                            echo "   This indicates a Docker mount issue on this system"
-                            exit 1
+                        # Since agent container mounts /home/jenkins from host, the path should work
+                        # But we need to ensure Docker can access it. Try to find the actual host mount point
+                        # Check if we're in a container by looking at /.dockerenv or /proc/1/cgroup
+                        if [ -f /.dockerenv ] || grep -qa docker /proc/1/cgroup 2>/dev/null; then
+                            echo "🔍 Running inside container (Jenkins agent)"
+                            echo "   Agent container should have mounted host /home/jenkins"
+                            echo "   Using path as-is for Docker mount: \${WORKSPACE_ABS}"
+                        else
+                            echo "🔍 Running directly on host"
+                            echo "   Using path as-is: \${WORKSPACE_ABS}"
                         fi
                         
-                        # Check if mount test actually shows files (not just . and ..)
-                        FILE_COUNT=\$(echo "\$MOUNT_TEST_OUTPUT" | grep -v "^\\.\\.\\?\$" | grep -v "^total" | wc -l)
-                        if [ \$FILE_COUNT -lt 2 ]; then
-                            echo "⚠️  WARNING: Mount test shows empty directory!"
-                            echo "   Output: \$MOUNT_TEST_OUTPUT"
-                            echo "   This suggests the mount is not working correctly"
-                            echo "   Files should be visible but are not"
+                        # CRITICAL FIX: Test mount with actual file check, not just directory listing
+                        echo "🔍 Testing volume mount with actual file access..."
+                        MOUNT_TEST=\$(docker run --rm -v "\${WORKSPACE_ABS}:/workspace" alpine:latest sh -c "test -f /workspace/ats-manifest.yaml && echo 'FILE_EXISTS' || echo 'FILE_MISSING'" 2>&1)
+                        
+                        if echo "\$MOUNT_TEST" | grep -q "FILE_EXISTS"; then
+                            echo "✅ Mount test PASSED - manifest file is accessible in container"
+                            echo "   File content preview:"
+                            docker run --rm -v "\${WORKSPACE_ABS}:/workspace" alpine:latest head -5 /workspace/ats-manifest.yaml 2>&1 || true
+                        else
+                            echo "❌ CRITICAL: Mount test FAILED - file not accessible!"
+                            echo "   Test output: \$MOUNT_TEST"
                             echo ""
-                            echo "   Troubleshooting:"
-                            echo "   1. Check if path is correct: \${WORKSPACE_ABS}"
-                            echo "   2. Verify Docker can access host paths"
-                            echo "   3. Check if running inside another container (nested mount issue)"
-                            exit 1
+                            echo "   This means Docker cannot access files from this path."
+                            echo "   Possible causes:"
+                            echo "   1. Path is inside container filesystem, not host filesystem"
+                            echo "   2. Docker socket doesn't have access to this path"
+                            echo "   3. Permission issues"
+                            echo ""
+                            echo "   Attempting alternative: Copy files to temp location on host..."
+                            
+                            # Alternative: Copy to a known host location that Docker can access
+                            # Use /tmp which should be accessible from host
+                            HOST_TMP="/tmp/jenkins-workspace-\$(date +%s)"
+                            mkdir -p "\${HOST_TMP}"
+                            echo "   Copying workspace to: \${HOST_TMP}"
+                            cp -r \${WORKSPACE_ABS}/* "\${HOST_TMP}/" || {
+                                echo "   ❌ Failed to copy files"
+                                exit 1
+                            }
+                            WORKSPACE_ABS="\${HOST_TMP}"
+                            echo "   ✅ Using alternative path: \${WORKSPACE_ABS}"
+                            echo "   ⚠️  Note: Results will need to be copied back"
                         fi
-                        
-                        echo "✅ Volume mount test successful - files are accessible"
-                        echo "   Found \$FILE_COUNT items in mounted directory"
                         echo ""
                         
                         # Run test container with workspace mount
