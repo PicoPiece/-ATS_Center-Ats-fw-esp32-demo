@@ -133,31 +133,74 @@ pipeline {
             }
         }
 
-        stage('Build ATS Node Test Container') {
+        stage('Prepare ATS Node Test Container') {
             agent { label "${params.ATS_NODE_LABEL}" }
             steps {
                 script {
-                    // Check if ats-ats-node repo is available
-                    def atsNodeRepo = "${WORKSPACE_DIR}/ats-ats-node"
-                    
-                    sh """
-                        # Try to checkout ats-ats-node if not present
-                        if [ ! -d "${atsNodeRepo}" ]; then
-                            echo "📦 Checking out ats-ats-node repository..."
-                            cd ${WORKSPACE_DIR}
-                            git clone https://github.com/PicoPiece/ats-ats-node.git || echo "⚠️  Could not clone ats-ats-node"
-                        fi
+                    if (params.IMAGE_SOURCE == 'registry') {
+                        // Option 1: Pull from registry (fast, recommended)
+                        echo "📥 Pulling ATS node test image from registry..."
+                        sh """
+                            if docker pull ${params.ATS_NODE_TEST_IMAGE}; then
+                                echo "✅ Image pulled successfully: ${params.ATS_NODE_TEST_IMAGE}"
+                            else
+                                echo "⚠️  Failed to pull image from registry, falling back to build..."
+                                IMAGE_SOURCE='build'
+                            fi
+                        """
                         
-                        # Build ats-node-test container
-                        if [ -d "${atsNodeRepo}/docker/ats-node-test" ]; then
-                            echo "🐳 Building ATS node test container..."
-                            cd ${atsNodeRepo}/docker/ats-node-test
-                            docker build -t ${params.ATS_NODE_TEST_IMAGE} .
-                            echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
-                        else
-                            echo "⚠️  ats-node-test Dockerfile not found, using pre-built image: ${params.ATS_NODE_TEST_IMAGE}"
-                        fi
-                    """
+                        // If pull failed, fall back to build
+                        if (env.IMAGE_SOURCE == 'build' || currentBuild.result == 'FAILURE') {
+                            echo "🔨 Building image locally (fallback)..."
+                            def atsNodeRepo = "${WORKSPACE_DIR}/ats-ats-node"
+                            sh """
+                                if [ ! -d "${atsNodeRepo}" ]; then
+                                    echo "📦 Cloning ats-ats-node repository..."
+                                    cd ${WORKSPACE_DIR}
+                                    git clone https://github.com/PicoPiece/ats-ats-node.git || {
+                                        echo "❌ Failed to clone ats-ats-node"
+                                        exit 1
+                                    }
+                                fi
+                                
+                                if [ -d "${atsNodeRepo}/docker/ats-node-test" ]; then
+                                    echo "🐳 Building ATS node test container..."
+                                    cd ${atsNodeRepo}/docker/ats-node-test
+                                    docker build -t ${params.ATS_NODE_TEST_IMAGE} .
+                                    echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
+                                else
+                                    echo "❌ Dockerfile not found: ${atsNodeRepo}/docker/ats-node-test"
+                                    exit 1
+                                fi
+                            """
+                        }
+                    } else {
+                        // Option 2: Build on agent (slow, but works without registry)
+                        echo "🔨 Building ATS node test container on agent..."
+                        def atsNodeRepo = "${WORKSPACE_DIR}/ats-ats-node"
+                        sh """
+                            # Checkout ats-ats-node repo if not present
+                            if [ ! -d "${atsNodeRepo}" ]; then
+                                echo "📦 Cloning ats-ats-node repository..."
+                                cd ${WORKSPACE_DIR}
+                                git clone https://github.com/PicoPiece/ats-ats-node.git || {
+                                    echo "❌ Failed to clone ats-ats-node"
+                                    exit 1
+                                }
+                            fi
+                            
+                            # Build ats-node-test container
+                            if [ -d "${atsNodeRepo}/docker/ats-node-test" ]; then
+                                echo "🐳 Building ATS node test container..."
+                                cd ${atsNodeRepo}/docker/ats-node-test
+                                docker build -t ${params.ATS_NODE_TEST_IMAGE} .
+                                echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
+                            else
+                                echo "❌ Dockerfile not found: ${atsNodeRepo}/docker/ats-node-test"
+                                exit 1
+                            fi
+                        """
+                    }
                 }
             }
         }
