@@ -240,9 +240,14 @@ pipeline {
                                         echo "🐳 Build context ready: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test"
                                         cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
                                         
-                                        # Use BuildKit if available to speed up build, but fall back gracefully
-                                        export DOCKER_BUILDKIT=1 || true
-                                        echo "🧰 Building ATS node test image (allows cache)..."
+                                        # Check if buildx is available, if not disable BuildKit
+                                        if docker buildx version > /dev/null 2>&1; then
+                                            export DOCKER_BUILDKIT=1
+                                            echo "🧰 Building ATS node test image with BuildKit..."
+                                        else
+                                            echo "⚠️  BuildKit/buildx not available, using legacy builder..."
+                                            unset DOCKER_BUILDKIT || true
+                                        fi
                                         docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
                                         echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
                                     else
@@ -284,9 +289,14 @@ pipeline {
                                     echo "🐳 Build context ready: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test"
                                     cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
                                     
-                                    # Use BuildKit if available to speed up build, but fall back gracefully
-                                    export DOCKER_BUILDKIT=1 || true
-                                    echo "🧰 Building ATS node test image (allows cache)..."
+                                    # Check if buildx is available, if not disable BuildKit
+                                    if docker buildx version > /dev/null 2>&1; then
+                                        export DOCKER_BUILDKIT=1
+                                        echo "🧰 Building ATS node test image with BuildKit..."
+                                    else
+                                        echo "⚠️  BuildKit/buildx not available, using legacy builder..."
+                                        unset DOCKER_BUILDKIT || true
+                                    fi
                                     docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
                                     echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
                                 else
