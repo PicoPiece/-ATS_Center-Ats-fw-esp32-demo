@@ -188,30 +188,53 @@ pipeline {
                         if (ghcrCredsId && ghcrCredsId != '') {
                             echo "🔐 Attempting to login to GHCR with credentials ID: ${ghcrCredsId}"
                             try {
-                                withCredentials([usernamePassword(credentialsId: ghcrCredsId, usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_TOKEN')]) {
+                                withCredentials([usernamePassword(credentialsId: ghcrCredsId,
+                                                 usernameVariable: 'GHCR_USER',
+                                                 passwordVariable: 'GHCR_TOKEN')]) {
                                     sh """
-                                        echo \$GHCR_TOKEN | docker login ghcr.io -u \$GHCR_USER --password-stdin
+                                        echo "Logging into GHCR..."
+                                        echo "\$GHCR_TOKEN" | docker login ghcr.io -u "\$GHCR_USER" --password-stdin
                                         echo "✅ GHCR login successful"
+                                        
+                                        echo "📥 Pulling image: ${imageToPull}"
+                                        docker pull ${imageToPull}
+                                        
+                                        # Tag with the expected name for consistency
+                                        docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true
                                     """
                                 }
+                                pullSuccess = true
+                                echo "✅ Image pulled successfully: ${imageToPull}"
                             } catch (Exception e) {
                                 echo "⚠️  Failed to use credentials ${ghcrCredsId}: ${e.getMessage()}"
                                 echo "   Will try pull without login (works if image is public)"
+                                
+                                // Fallback: try pull without credentials
+                                pullSuccess = sh(
+                                    script: "docker pull ${imageToPull} 2>&1",
+                                    returnStatus: true
+                                ) == 0
+                                
+                                if (pullSuccess) {
+                                    echo "✅ Image pulled successfully (public): ${imageToPull}"
+                                    sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
+                                }
                             }
                         } else {
                             echo "ℹ️  No GHCR credentials provided, trying public pull..."
+                            pullSuccess = sh(
+                                script: "docker pull ${imageToPull} 2>&1",
+                                returnStatus: true
+                            ) == 0
+                            
+                            if (pullSuccess) {
+                                echo "✅ Image pulled successfully: ${imageToPull}"
+                                // Tag with the expected name for consistency
+                                sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
+                            }
                         }
                         
-                        pullSuccess = sh(
-                            script: "docker pull ${imageToPull} 2>&1",
-                            returnStatus: true
-                        ) == 0
-                        
-                        if (pullSuccess) {
-                            echo "✅ Image pulled successfully: ${imageToPull}"
-                            // Tag with the expected name for consistency
-                            sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
-                        } else {
+                        if (!pullSuccess) {
                             echo "⚠️  Failed to pull image from registry"
                             echo ""
                             sh """
