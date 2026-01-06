@@ -25,7 +25,7 @@ pipeline {
         string(
             name: 'ATS_NODE_TEST_IMAGE',
             defaultValue: 'ghcr.io/picopiece/ats-node-test:latest',
-            description: 'Docker image name for ATS node test container (must be lowercase for registry)'
+            description: 'Docker image name for ATS node test container (registry or local)'
         )
         string(
             name: 'TEST_REPO_URL',
@@ -275,18 +275,22 @@ pipeline {
                         # Create results directory
                         mkdir -p ${RESULTS_DIR}
                         
-                        # Ensure manifest is readable by container (fix permissions if needed)
+                        # Ensure manifest and directory are readable by container
                         chmod 644 ats-manifest.yaml || true
-                        echo "🔍 File permissions:"
+                        chmod 755 . || true  # Ensure directory is traversable
+                        chown \$(id -u):\$(id -g) ats-manifest.yaml 2>/dev/null || true
+                        echo "🔍 File permissions on host:"
                         ls -lah ats-manifest.yaml
+                        echo "🔍 Directory permissions:"
+                        ls -ld .
                         echo ""
                         
                         # Test container can see and read the file
                         echo "🔍 Testing container file access:"
-                        docker run --rm \\
+                        docker run --rm --entrypoint sh \\
                             -v \$(pwd):/workspace \\
                             ${params.ATS_NODE_TEST_IMAGE} \\
-                            sh -c "echo 'Container user:' && whoami && echo 'Container can see:' && ls -lah /workspace/ats-manifest.yaml 2>&1 && echo 'Container can read:' && test -f /workspace/ats-manifest.yaml && echo '✅ File exists' || echo '❌ File not found'"
+                            -c "echo 'Container user:' && whoami && echo 'UID:' && id -u && echo 'GID:' && id -g && echo '' && echo 'Workspace mount test:' && ls -lah /workspace/ | head -10 && echo '' && echo 'Manifest file test:' && ls -lah /workspace/ats-manifest.yaml 2>&1 && echo '' && echo 'File existence test:' && test -f /workspace/ats-manifest.yaml && echo '✅ File exists and is readable' || (echo '❌ File not found or not readable' && echo 'Trying to read:' && cat /workspace/ats-manifest.yaml 2>&1 || echo 'Cannot read file')"
                         echo ""
                         
                         # Run ats-node-test container
