@@ -57,16 +57,37 @@ pipeline {
                     
                     // Copy firmware artifacts from build job
                     echo "📥 Copying firmware artifacts from ${params.BUILD_JOB_NAME} #${params.BUILD_NUMBER}"
+                    
+                    // Copy artifacts in two steps to ensure both are copied
                     copyArtifacts(
                         projectName: params.BUILD_JOB_NAME,
                         selector: [
                             $class: 'SpecificBuildSelector',
                             buildNumber: params.BUILD_NUMBER.toString()
                         ],
-                        filter: "*.bin,ats-manifest.yaml",
+                        filter: "*.bin",
                         target: WORKSPACE_DIR,
                         flatten: true
                     )
+                    
+                    copyArtifacts(
+                        projectName: params.BUILD_JOB_NAME,
+                        selector: [
+                            $class: 'SpecificBuildSelector',
+                            buildNumber: params.BUILD_NUMBER.toString()
+                        ],
+                        filter: "ats-manifest.yaml",
+                        target: WORKSPACE_DIR,
+                        flatten: true
+                    )
+                    
+                    // Verify artifacts were copied
+                    sh """
+                        echo "📦 Copied artifacts:"
+                        ls -lh ${WORKSPACE_DIR}/*.bin 2>/dev/null || echo "⚠️  No .bin files found"
+                        ls -lh ${WORKSPACE_DIR}/ats-manifest.yaml 2>/dev/null || echo "⚠️  Manifest not found"
+                        echo ""
+                    """
                     
                     // Checkout test framework
                     echo "📦 Checking out test framework: ${params.TEST_REPO_URL}"
@@ -92,8 +113,16 @@ pipeline {
                         echo "✅ Workspace prepared:"
                         ls -lh ${WORKSPACE_DIR}/
                         echo ""
-                        echo "📋 Manifest:"
-                        cat ${WORKSPACE_DIR}/ats-manifest.yaml || echo "⚠️  Manifest not found"
+                        echo "📋 Manifest verification:"
+                        if [ -f ${WORKSPACE_DIR}/ats-manifest.yaml ]; then
+                            echo "✅ Manifest found:"
+                            cat ${WORKSPACE_DIR}/ats-manifest.yaml
+                        else
+                            echo "❌ Manifest NOT found in ${WORKSPACE_DIR}/"
+                            echo "   Current directory contents:"
+                            ls -la ${WORKSPACE_DIR}/
+                            exit 1
+                        fi
                     """
                 }
             }
