@@ -182,16 +182,24 @@ pipeline {
                         }
                         
                         // Try to login to GHCR if credentials are available (optional)
-                        def ghcrCredsId = env.GHCR_CREDENTIALS_ID ?: ''
+                        def ghcrCredsId = params.GHCR_CREDENTIALS_ID ?: env.GHCR_CREDENTIALS_ID ?: ''
                         def pullSuccess = false
                         
-                        if (ghcrCredsId) {
-                            echo "🔐 Attempting to login to GHCR with credentials..."
-                            withCredentials([usernamePassword(credentialsId: ghcrCredsId, usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_TOKEN')]) {
-                                sh """
-                                    echo \$GHCR_TOKEN | docker login ghcr.io -u \$GHCR_USER --password-stdin || echo "⚠️  GHCR login failed, will try pull anyway"
-                                """
+                        if (ghcrCredsId && ghcrCredsId != '') {
+                            echo "🔐 Attempting to login to GHCR with credentials ID: ${ghcrCredsId}"
+                            try {
+                                withCredentials([usernamePassword(credentialsId: ghcrCredsId, usernameVariable: 'GHCR_USER', passwordVariable: 'GHCR_TOKEN')]) {
+                                    sh """
+                                        echo \$GHCR_TOKEN | docker login ghcr.io -u \$GHCR_USER --password-stdin
+                                        echo "✅ GHCR login successful"
+                                    """
+                                }
+                            } catch (Exception e) {
+                                echo "⚠️  Failed to use credentials ${ghcrCredsId}: ${e.getMessage()}"
+                                echo "   Will try pull without login (works if image is public)"
                             }
+                        } else {
+                            echo "ℹ️  No GHCR credentials provided, trying public pull..."
                         }
                         
                         pullSuccess = sh(
