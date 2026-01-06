@@ -459,24 +459,35 @@ pipeline {
                         echo "✅ Docker volume created"
                         echo ""
                         
-                        # Copy files into the volume using a temporary container
-                        echo "📋 Copying workspace files into Docker volume..."
-                        docker run --rm \\
-                            -v "\${WORKSPACE_ABS}:/source:ro" \\
+                        # Copy files into the volume using tar pipe (works in Docker-in-Docker)
+                        # This avoids bind mount which doesn't work in nested containers
+                        echo "📋 Copying workspace files into Docker volume using tar pipe..."
+                        echo "   Source: \${WORKSPACE_ABS}"
+                        echo "   Volume: \${WORKSPACE_VOLUME}"
+                        echo ""
+                        
+                        # Method: tar from workspace -> pipe -> tar into volume container
+                        # This works because we're copying from container filesystem, not mounting
+                        cd \${WORKSPACE_ABS}
+                        tar -czf - . | docker run --rm -i \\
                             -v \${WORKSPACE_VOLUME}:/workspace \\
                             alpine:latest sh -c "
-                                echo 'Copying files from /source to /workspace...'
-                                cp -r /source/* /workspace/ 2>&1 || {
-                                    echo '❌ Failed to copy files'
+                                echo 'Extracting files into volume...'
+                                cd /workspace
+                                tar -xzf - || {
+                                    echo '❌ Failed to extract files'
                                     exit 1
                                 }
-                                echo '✅ Files copied successfully'
+                                echo '✅ Files extracted successfully'
                                 echo ''
                                 echo 'Verifying files in volume:'
                                 ls -lah /workspace/ | head -10
                                 echo ''
                                 echo 'Verifying manifest file:'
                                 test -f /workspace/ats-manifest.yaml && echo '✅ Manifest file exists' || echo '❌ Manifest file missing'
+                                echo ''
+                                echo 'File count:'
+                                find /workspace -type f | wc -l
                             " || {
                             echo "❌ Failed to copy files into volume"
                             docker volume rm \${WORKSPACE_VOLUME} 2>/dev/null || true
