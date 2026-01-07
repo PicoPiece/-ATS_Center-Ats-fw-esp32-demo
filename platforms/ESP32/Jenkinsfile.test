@@ -631,14 +631,31 @@ pipeline {
                                 alpine:latest sh -c "
                                     if [ -d /source/${RESULTS_DIR} ]; then
                                         mkdir -p /dest/${RESULTS_DIR} || true
+                                        # Copy files and preserve permissions
                                         cp -r /source/${RESULTS_DIR}/* /dest/${RESULTS_DIR}/ 2>&1 || echo '⚠️  Some files may not have been copied'
+                                        # Fix ownership to Jenkins user
+                                        chown -R \$(id -u):\$(id -g) /dest/${RESULTS_DIR}/ 2>/dev/null || true
                                         echo '✅ Results copied back'
                                         echo '   Files copied:'
-                                        ls -la /dest/${RESULTS_DIR}/ || true
+                                        ls -lah /dest/${RESULTS_DIR}/ || true
+                                        echo '   File count:'
+                                        find /dest/${RESULTS_DIR} -type f | wc -l || echo '0'
                                     else
                                         echo '⚠️  Results directory not found in volume'
                                     fi
                                 " || echo "⚠️  Failed to copy results back"
+                            
+                            # Verify files are in Jenkins workspace
+                            echo ""
+                            echo "🔍 Verifying results in Jenkins workspace:"
+                            ls -lah ${RESULTS_DIR}/ || echo "   ⚠️  Results directory not found"
+                            echo ""
+                            echo "📊 Results summary:"
+                            if [ -d "${RESULTS_DIR}" ]; then
+                                find ${RESULTS_DIR} -type f -exec ls -lh {} \\; || echo "   No files found"
+                            else
+                                echo "   ⚠️  Results directory does not exist"
+                            fi
                             
                             # Cleanup volume
                             echo "🧹 Cleaning up Docker volume..."
