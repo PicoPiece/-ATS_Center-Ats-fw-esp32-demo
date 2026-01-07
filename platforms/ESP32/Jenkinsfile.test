@@ -655,40 +655,22 @@ pipeline {
                                 cat ${RESULTS_DIR}/tar_errors.log 2>/dev/null || true
                                 exit 1
                             fi
-                            echo "   Tar file created: \${TAR_SIZE} bytes"
                             rm -f ${RESULTS_DIR}/tar_errors.log 2>/dev/null || true
                             
                             # Extract tar archive to results directory
-                            echo "   Extracting tar archive..."
-                            # Extract into results directory (not into results/results/)
                             tar -xzf ${RESULTS_DIR}/results.tar.gz -C ${RESULTS_DIR}/ 2>&1 || {
                                 echo "❌ Failed to extract tar archive"
-                                echo "   Tar file size: \${TAR_SIZE} bytes"
-                                file ${RESULTS_DIR}/results.tar.gz || true
-                                echo "   Trying to list tar contents:"
-                                tar -tzf ${RESULTS_DIR}/results.tar.gz | head -10 || true
                                 exit 1
                             }
                             rm -f ${RESULTS_DIR}/results.tar.gz 2>/dev/null || true
                             
                             # Verify files were copied
-                            echo ""
-                            echo "✅ Results copy completed"
-                            echo "   Checking files in results directory:"
-                            ls -lah ${RESULTS_DIR}/ || true
                             FILE_COUNT=\$(find ${RESULTS_DIR} -type f 2>/dev/null | wc -l)
-                            echo "   Files in Jenkins workspace: \${FILE_COUNT}"
-                            if [ "\${FILE_COUNT}" -gt 0 ]; then
-                                echo "   ✅ Files found:"
-                                find ${RESULTS_DIR} -type f -exec ls -lh {} \\; || true
-                            else
-                                echo "   ❌ No files found - copy failed"
-                                echo "   Directory contents:"
-                                ls -lah ${RESULTS_DIR}/ || true
-                                echo "   Checking for hidden files:"
-                                find ${RESULTS_DIR} -type f -o -type d | head -20 || true
+                            if [ "\${FILE_COUNT}" -eq 0 ]; then
+                                echo "❌ No files found after copy"
                                 exit 1
                             fi
+                            echo "✅ Results copied: \${FILE_COUNT} files"
                             
                             # Fix ownership and permissions
                             chown -R \$(id -u):\$(id -g) ${RESULTS_DIR}/ 2>/dev/null || true
