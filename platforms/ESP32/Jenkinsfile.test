@@ -669,19 +669,19 @@ pipeline {
                             echo "   Verifying source files in volume..."
                             docker run --rm \\
                                 -v \${WORKSPACE_VOLUME}:/source:ro \\
-                                alpine:latest sh -c '
-                                    if [ -d /source/'${RESULTS_DIR}' ]; then
-                                        echo "   Source files in volume:"
-                                        ls -lah /source/'${RESULTS_DIR}'/ || true
-                                        echo ""
-                                        FILE_COUNT=$(find /source/'${RESULTS_DIR}' -type f 2>/dev/null | wc -l)
-                                        echo "   Found ${FILE_COUNT} files to copy"
+                                alpine:latest sh -c "
+                                    if [ -d /source/${RESULTS_DIR} ]; then
+                                        echo '   Source files in volume:'
+                                        ls -lah /source/${RESULTS_DIR}/ || true
+                                        echo ''
+                                        FILE_COUNT=\$(find /source/${RESULTS_DIR} -type f 2>/dev/null | wc -l)
+                                        echo \"   Found \${FILE_COUNT} files to copy\"
                                     else
-                                        echo "⚠️  Results directory not found in volume: /source/'${RESULTS_DIR}'" >&2
-                                        echo "   Volume root contents:" >&2
+                                        echo '⚠️  Results directory not found in volume: /source/${RESULTS_DIR}' >&2
+                                        echo '   Volume root contents:' >&2
                                         ls -la /source/ 2>&1 || true
                                     fi
-                                ' || echo "   ⚠️  Verification had issues, continuing with copy anyway..."
+                                " || echo "   ⚠️  Verification had issues, continuing with copy anyway..."
                             
                             # Create tar archive (redirect echo to stderr, only tar to stdout)
                             echo "   Creating tar archive from volume..."
