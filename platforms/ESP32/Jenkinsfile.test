@@ -657,28 +657,58 @@ pipeline {
                                     fi
                                 " || echo "⚠️  Failed to copy results back"
                             
-                            # Fix ownership to Jenkins user (if running as different user)
+                            # CRITICAL: Fix ownership and permissions AFTER copy
+                            # Files are owned by root in container, need to fix for Jenkins user
+                            echo ""
+                            echo "🔧 Fixing file ownership and permissions..."
                             chown -R \$(id -u):\$(id -g) ${RESULTS_DIR}/ 2>/dev/null || true
-                            chmod -R 644 ${RESULTS_DIR}/* 2>/dev/null || true
+                            # Fix permissions for files (not directory)
+                            find ${RESULTS_DIR} -type f -exec chmod 644 {} \\; 2>/dev/null || true
+                            find ${RESULTS_DIR} -type d -exec chmod 755 {} \\; 2>/dev/null || true
                             
-                            # Verify files are in Jenkins workspace
+                            # Verify files are in Jenkins workspace IMMEDIATELY after copy
                             echo ""
                             echo "🔍 Verifying results in Jenkins workspace:"
                             echo "   Directory: \$(pwd)/${RESULTS_DIR}"
-                            if [ -d "${RESULTS_DIR}" ]; then
-                                echo "   ✅ Results directory exists"
-                                FILE_COUNT=\$(find ${RESULTS_DIR} -type f | wc -l)
-                                echo "   File count: \${FILE_COUNT}"
-                                if [ "\${FILE_COUNT}" -gt 0 ]; then
-                                    echo "   Files:"
-                                    find ${RESULTS_DIR} -type f -exec ls -lh {} \\;
-                                else
-                                    echo "   ⚠️  No files found in results directory"
-                                    echo "   Directory contents:"
-                                    ls -lah ${RESULTS_DIR}/ || true
-                                fi
+                            echo "   Absolute path: \${CURRENT_DIR}/${RESULTS_DIR}"
+                            
+                            # Check if directory exists
+                            if [ ! -d "${RESULTS_DIR}" ]; then
+                                echo "   ❌ Results directory does not exist!"
+                                exit 1
+                            fi
+                            
+                            echo "   ✅ Results directory exists"
+                            
+                            # List directory contents first
+                            echo "   Directory listing:"
+                            ls -lah ${RESULTS_DIR}/ || true
+                            
+                            # Count files
+                            FILE_COUNT=\$(find ${RESULTS_DIR} -type f 2>/dev/null | wc -l)
+                            echo "   File count: \${FILE_COUNT}"
+                            
+                            if [ "\${FILE_COUNT}" -gt 0 ]; then
+                                echo "   ✅ Files found:"
+                                find ${RESULTS_DIR} -type f -exec ls -lh {} \\; || true
+                                
+                                # Verify each expected file exists
+                                echo ""
+                                echo "   📋 Verifying expected files:"
+                                for file in ats-summary.json boot_messages.log junit.xml meta.yaml uart_boot.log; do
+                                    if [ -f "${RESULTS_DIR}/\${file}" ]; then
+                                        SIZE=\$(stat -c%s "${RESULTS_DIR}/\${file}" 2>/dev/null || echo "0")
+                                        echo "      ✅ \${file} (${SIZE} bytes)"
+                                    else
+                                        echo "      ❌ \${file} MISSING"
+                                    fi
+                                done
                             else
-                                echo "   ⚠️  Results directory does not exist"
+                                echo "   ❌ No files found in results directory!"
+                                echo "   This is a critical error - files were copied but not found"
+                                echo "   Checking if files exist with different permissions:"
+                                sudo ls -lah ${RESULTS_DIR}/ 2>/dev/null || ls -lah ${RESULTS_DIR}/ || true
+                                exit 1
                             fi
                             
                             # Cleanup volume
