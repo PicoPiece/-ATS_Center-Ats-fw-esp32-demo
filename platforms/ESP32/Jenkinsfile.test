@@ -641,17 +641,24 @@ pipeline {
                                         ls -lah /source/${RESULTS_DIR}/ || true
                                         echo ''
                                         mkdir -p /dest/${RESULTS_DIR} || true
+                                        # Remove any existing files first to avoid conflicts
+                                        rm -f /dest/${RESULTS_DIR}/* 2>/dev/null || true
                                         # Copy files with verbose output and preserve attributes
                                         echo '   Copying files...'
                                         cp -av /source/${RESULTS_DIR}/* /dest/${RESULTS_DIR}/ 2>&1
                                         echo ''
+                                        # Verify copy succeeded
+                                        COPY_COUNT=\$(find /dest/${RESULTS_DIR} -type f 2>/dev/null | wc -l)
+                                        echo \"   Copied \${COPY_COUNT} files\"
                                         # Sync to ensure files are written to host
                                         sync
                                         echo '✅ Results copied back'
                                         echo '   Files in destination (inside container):'
                                         ls -lah /dest/${RESULTS_DIR}/ || true
                                         echo '   File count (inside container):'
-                                        find /dest/${RESULTS_DIR} -type f | wc -l || echo '0'
+                                        find /dest/${RESULTS_DIR} -type f 2>/dev/null | wc -l || echo '0'
+                                        echo '   Verifying after sync:'
+                                        ls -lah /dest/${RESULTS_DIR}/ || true
                                         echo '   Verifying files are accessible:'
                                         for file in ats-summary.json boot_messages.log junit.xml meta.yaml uart_boot.log; do
                                             FILE_PATH=\"/dest/${RESULTS_DIR}/\${file}\"
