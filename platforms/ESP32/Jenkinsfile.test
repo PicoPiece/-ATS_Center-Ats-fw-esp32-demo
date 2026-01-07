@@ -623,13 +623,18 @@ pipeline {
                             # Copy results back from volume to workspace
                             echo ""
                             echo "📦 Copying results back from Docker volume..."
+                            # Ensure results directory exists before copying
+                            mkdir -p ${RESULTS_DIR}
                             docker run --rm \\
                                 -v \${WORKSPACE_VOLUME}:/source:ro \\
                                 -v "\$(pwd):/dest" \\
                                 alpine:latest sh -c "
                                     if [ -d /source/${RESULTS_DIR} ]; then
+                                        mkdir -p /dest/${RESULTS_DIR} || true
                                         cp -r /source/${RESULTS_DIR}/* /dest/${RESULTS_DIR}/ 2>&1 || echo '⚠️  Some files may not have been copied'
                                         echo '✅ Results copied back'
+                                        echo '   Files copied:'
+                                        ls -la /dest/${RESULTS_DIR}/ || true
                                     else
                                         echo '⚠️  Results directory not found in volume'
                                     fi
@@ -670,7 +675,8 @@ pipeline {
             steps {
                 dir(WORKSPACE_DIR) {
                     archiveArtifacts artifacts: "${RESULTS_DIR}/**", allowEmptyArchive: true
-                    publishTestResults testResultsPattern: "${RESULTS_DIR}/**/*.xml", allowEmptyResults: true
+                    // publishTestResults requires JUnit plugin - using junit step instead
+                    junit testResultsPattern: "${RESULTS_DIR}/**/*.xml", allowEmptyResults: true
                 }
             }
         }
