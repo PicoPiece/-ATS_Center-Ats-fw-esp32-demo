@@ -139,8 +139,8 @@ EOF
                             parameters: [
                                 string(name: 'BUILD_JOB_NAME', value: env.JOB_NAME),
                                 string(name: 'BUILD_NUMBER', value: env.BUILD_NUMBER.toString()),
-                                string(name: 'ATS_NODE_LABEL', value: 'ats-node'),
-                                string(name: 'ATS_NODE_TEST_IMAGE', value: 'ats-node-test:latest'),
+                                string(name: 'ATS_NODE_LABEL', value: 'raspi-ats-01'),
+                                string(name: 'ATS_NODE_TEST_IMAGE', value: 'ghcr.io/picopiece/ats-node-test:latest'),
                                 string(name: 'TEST_REPO_URL', value: 'https://github.com/PicoPiece/ats-test-esp32-demo.git'),
                                 string(name: 'TEST_REPO_BRANCH', value: 'main')
                             ],
