@@ -623,36 +623,60 @@ pipeline {
                             # Copy results back from volume to workspace
                             echo ""
                             echo "📦 Copying results back from Docker volume..."
+                            # Get current directory (should be Jenkins workspace)
+                            CURRENT_DIR=\$(pwd)
+                            echo "   Current directory: \${CURRENT_DIR}"
+                            echo "   Target results dir: \${CURRENT_DIR}/${RESULTS_DIR}"
+                            
                             # Ensure results directory exists before copying
                             mkdir -p ${RESULTS_DIR}
+                            chmod 755 ${RESULTS_DIR} || true
+                            
                             docker run --rm \\
                                 -v \${WORKSPACE_VOLUME}:/source:ro \\
-                                -v "\$(pwd):/dest" \\
+                                -v "\${CURRENT_DIR}:/dest" \\
                                 alpine:latest sh -c "
                                     if [ -d /source/${RESULTS_DIR} ]; then
+                                        echo '   Source files in volume:'
+                                        ls -lah /source/${RESULTS_DIR}/ || true
+                                        echo ''
                                         mkdir -p /dest/${RESULTS_DIR} || true
-                                        # Copy files and preserve permissions
-                                        cp -r /source/${RESULTS_DIR}/* /dest/${RESULTS_DIR}/ 2>&1 || echo '⚠️  Some files may not have been copied'
-                                        # Fix ownership to Jenkins user
-                                        chown -R \$(id -u):\$(id -g) /dest/${RESULTS_DIR}/ 2>/dev/null || true
+                                        # Copy files with verbose output
+                                        echo '   Copying files...'
+                                        cp -v /source/${RESULTS_DIR}/* /dest/${RESULTS_DIR}/ 2>&1
+                                        echo ''
                                         echo '✅ Results copied back'
-                                        echo '   Files copied:'
+                                        echo '   Files in destination:'
                                         ls -lah /dest/${RESULTS_DIR}/ || true
                                         echo '   File count:'
                                         find /dest/${RESULTS_DIR} -type f | wc -l || echo '0'
                                     else
-                                        echo '⚠️  Results directory not found in volume'
+                                        echo '⚠️  Results directory not found in volume: /source/${RESULTS_DIR}'
+                                        echo '   Volume contents:'
+                                        ls -la /source/ || true
                                     fi
                                 " || echo "⚠️  Failed to copy results back"
+                            
+                            # Fix ownership to Jenkins user (if running as different user)
+                            chown -R \$(id -u):\$(id -g) ${RESULTS_DIR}/ 2>/dev/null || true
+                            chmod -R 644 ${RESULTS_DIR}/* 2>/dev/null || true
                             
                             # Verify files are in Jenkins workspace
                             echo ""
                             echo "🔍 Verifying results in Jenkins workspace:"
-                            ls -lah ${RESULTS_DIR}/ || echo "   ⚠️  Results directory not found"
-                            echo ""
-                            echo "📊 Results summary:"
+                            echo "   Directory: \$(pwd)/${RESULTS_DIR}"
                             if [ -d "${RESULTS_DIR}" ]; then
-                                find ${RESULTS_DIR} -type f -exec ls -lh {} \\; || echo "   No files found"
+                                echo "   ✅ Results directory exists"
+                                FILE_COUNT=\$(find ${RESULTS_DIR} -type f | wc -l)
+                                echo "   File count: \${FILE_COUNT}"
+                                if [ "\${FILE_COUNT}" -gt 0 ]; then
+                                    echo "   Files:"
+                                    find ${RESULTS_DIR} -type f -exec ls -lh {} \\;
+                                else
+                                    echo "   ⚠️  No files found in results directory"
+                                    echo "   Directory contents:"
+                                    ls -lah ${RESULTS_DIR}/ || true
+                                fi
                             else
                                 echo "   ⚠️  Results directory does not exist"
                             fi
