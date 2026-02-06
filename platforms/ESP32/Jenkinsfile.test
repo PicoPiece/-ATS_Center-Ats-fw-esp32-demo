@@ -345,7 +345,8 @@ pipeline {
                             // Fall back to build with hotfix
                             dir(WORKSPACE_DIR) {
                                 sh """
-                                    set -euo pipefail
+                                    #!/bin/bash
+                                    set -eu
                                     echo "🔍 Current directory: \$(pwd)"
                                     # Compute absolute workspace path
                                     WORKSPACE_ABS=\$(pwd)
@@ -394,7 +395,8 @@ pipeline {
                         echo "🔨 Building ATS node test container on agent..."
                         dir(WORKSPACE_DIR) {
                         sh """
-                                set -euo pipefail
+                                #!/bin/bash
+                                set -eu
                                 echo "🔍 Current directory: \$(pwd)"
                                 # Compute absolute workspace path
                                 WORKSPACE_ABS=\$(pwd)
