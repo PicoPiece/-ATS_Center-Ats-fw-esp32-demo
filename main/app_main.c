@@ -373,7 +373,7 @@ static esp_err_t tft_spi_init(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Hello Picopiece");   /* v1.1 - used for test pass/fail */
+    ESP_LOGI(TAG, "Hello RKTech");   /* v1.1 - used for test pass/fail */
     ESP_LOGI(TAG, "ATS ESP32 Firmware Demo");
     ESP_LOGI(TAG, "Build successful!");
 
@@ -417,7 +417,6 @@ void app_main(void)
         const char *line3 = "ESP32_IoT_LCD";
         int w3 = tft_string_width_px(line3);
         int x3 = (TFT_WIDTH - w3) / 2;
-        int y3 = TFT_HEIGHT / 2 + FONT5X7_H + 3;
         tft_draw_string_5x7(x3, y3, line3, 0x07FF);
 
         ESP_LOGI(TAG, "Text displayed on LCD");
