@@ -299,8 +299,8 @@ void app_main(void)
         ESP_LOGI(TAG, "TFT SPI init OK (SCK=%d, SDA/MOSI=%d, CS=%d, Res=%d, Rs=%d)",
                  TFT_SCK_GPIO, TFT_MOSI_GPIO, TFT_CS_GPIO, TFT_RST_GPIO, TFT_DC_GPIO);
         tft_display_init();
-        /* Background: dark blue; text: white, centered */
-        tft_fill_screen_rgb565(0x0010);  /* RGB565 dark blue */
+        /* LCD colors RGB565: 0x0000=black, 0xFFFF=white, 0x0010=dark blue. Background black, text white for readability. */
+        tft_fill_screen_rgb565(0x0000);  /* background black */
         {
             const char *line1 = "Welcome RKTech";
             const char *line2 = "ATS_Demo";
