@@ -609,6 +609,22 @@ pipeline {
                         # Use Docker volume if we're in Docker-in-Docker scenario, otherwise use bind mount
                         echo "🚀 Running ATS test container..."
                         
+                        # Detect serial port on host/agent for ESP32 flash (pass into container so flash can use it)
+                        SERIAL_PORT=""
+                        for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0 /dev/ttyACM1; do
+                            if [ -e "\$p" ]; then
+                                SERIAL_PORT="\$p"
+                                break
+                            fi
+                        done
+                        if [ -n "\${SERIAL_PORT}" ]; then
+                            echo "   Serial port on agent: \${SERIAL_PORT} (will pass to container as SERIAL_PORT)"
+                            SERIAL_ENV="-e SERIAL_PORT=\${SERIAL_PORT}"
+                        else
+                            echo "   ⚠️  No serial port found on agent (no /dev/ttyUSB* or /dev/ttyACM*). ESP32 flash will fail unless USB is passed through."
+                            SERIAL_ENV=""
+                        fi
+                        
                         if [ "\${USE_VOLUME}" = "true" ]; then
                             echo "   Using Docker volume: \${WORKSPACE_VOLUME} -> /workspace"
                             docker run --rm --privileged \\
@@ -618,6 +634,7 @@ pipeline {
                                 -v /dev/gpiomem:/dev/gpiomem \\
                                 -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                                 -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                                \${SERIAL_ENV} \\
                                 ${params.ATS_NODE_TEST_IMAGE}
                             
                             EXIT_CODE=\$?
@@ -691,6 +708,7 @@ pipeline {
                             -v /dev/gpiomem:/dev/gpiomem \\
                             -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                             -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                            \${SERIAL_ENV} \\
                             ${params.ATS_NODE_TEST_IMAGE}
                         
                             EXIT_CODE=\$?

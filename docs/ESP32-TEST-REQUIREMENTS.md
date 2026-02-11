@@ -32,6 +32,12 @@
 
   Firmware khởi tạo SPI với các pin trên.
 
+## Jenkins / ATS agent – Flash ESP32
+
+- Bước flash cần **cổng serial** (ví dụ `/dev/ttyUSB0` hoặc `/dev/ttyACM0`) trên agent chạy test.
+- **Yêu cầu:** ATS node (agent) phải có ESP32 cắm USB. Trên agent chạy `ls /dev/ttyUSB* /dev/ttyACM*` phải thấy ít nhất một device.
+- Nếu agent chạy **trong Docker**: khi start agent container, host cần truyền USB vào, ví dụ: `--device /dev/ttyUSB0` (hoặc `--privileged` tùy setup).
+
 ## Tóm tắt
 
 | Nội dung | Giá trị |
