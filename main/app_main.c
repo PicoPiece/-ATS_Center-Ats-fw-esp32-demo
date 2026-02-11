@@ -417,6 +417,7 @@ void app_main(void)
         const char *line3 = "ESP32_IoT_LCD";
         int w3 = tft_string_width_px(line3);
         int x3 = (TFT_WIDTH - w3) / 2;
+        int y3 = TFT_HEIGHT / 2 + FONT5X7_H + 2;
         tft_draw_string_5x7(x3, y3, line3, 0x07FF);
 
         ESP_LOGI(TAG, "Text displayed on LCD");
