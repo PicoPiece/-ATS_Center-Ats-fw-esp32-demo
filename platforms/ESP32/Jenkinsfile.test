@@ -611,6 +611,7 @@ pipeline {
                         
                         if [ "\${USE_VOLUME}" = "true" ]; then
                             echo "   Using Docker volume: \${WORKSPACE_VOLUME} -> /workspace"
+                            EXIT_CODE=0
                             docker run --rm --privileged \\
                                 -v \${WORKSPACE_VOLUME}:/workspace \\
                                 -v /dev:/dev \\
@@ -618,9 +619,7 @@ pipeline {
                                 -v /dev/gpiomem:/dev/gpiomem \\
                                 -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                                 -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
-                                ${params.ATS_NODE_TEST_IMAGE}
-                            
-                            EXIT_CODE=\$?
+                                ${params.ATS_NODE_TEST_IMAGE} || EXIT_CODE=\$?
                             
                             # Copy results back from volume to workspace
                             echo ""
@@ -636,12 +635,13 @@ pipeline {
                             docker run --rm \\
                                 -v \${WORKSPACE_VOLUME}:/source:ro \\
                                 alpine:latest sh -c "
-                                    # Volume has /workspace/ from initial copy, so results are at /source/workspace/${RESULTS_DIR}
-                                    if [ -d /source/workspace/${RESULTS_DIR} ]; then
-                                        cd /source/workspace/${RESULTS_DIR}
+                                    # Volume was populated with 'tar -xzf -' into /workspace, so volume root = workspace contents → results at /source/results
+                                    if [ -d /source/${RESULTS_DIR} ]; then
+                                        cd /source/${RESULTS_DIR}
                                         tar -czf - . 2>&1
                                     else
-                                        echo '⚠️  Results directory not found at /source/workspace/${RESULTS_DIR}' >&2
+                                        echo '⚠️  Results directory not found at /source/${RESULTS_DIR}' >&2
+                                        ls -la /source/ >&2 || true
                                         exit 1
                                     fi
                                 " > ${RESULTS_DIR}/results.tar.gz 2>${RESULTS_DIR}/tar_errors.log || {
@@ -685,16 +685,15 @@ pipeline {
                             docker volume rm \${WORKSPACE_VOLUME} 2>/dev/null || echo "⚠️  Failed to remove volume (may be in use)"
                         else
                             echo "   Using bind mount: \${WORKSPACE_ABS} -> /workspace"
-                        docker run --rm --privileged \\
+                            EXIT_CODE=0
+                            docker run --rm --privileged \\
                                 -v "\${WORKSPACE_ABS}:/workspace" \\
-                            -v /dev:/dev \\
-                            -v /sys/class/gpio:/sys/class/gpio:ro \\
-                            -v /dev/gpiomem:/dev/gpiomem \\
-                            -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
-                            -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
-                            ${params.ATS_NODE_TEST_IMAGE}
-                        
-                            EXIT_CODE=\$?
+                                -v /dev:/dev \\
+                                -v /sys/class/gpio:/sys/class/gpio:ro \\
+                                -v /dev/gpiomem:/dev/gpiomem \\
+                                -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
+                                -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                                ${params.ATS_NODE_TEST_IMAGE} || EXIT_CODE=\$?
                         fi
                         
                         if [ \$EXIT_CODE -eq 0 ]; then
