@@ -636,11 +636,12 @@ pipeline {
                             docker run --rm \\
                                 -v \${WORKSPACE_VOLUME}:/source:ro \\
                                 alpine:latest sh -c "
-                                    if [ -d /source/${RESULTS_DIR} ]; then
-                                        cd /source/${RESULTS_DIR}
+                                    # Volume has /workspace/ from initial copy, so results are at /source/workspace/${RESULTS_DIR}
+                                    if [ -d /source/workspace/${RESULTS_DIR} ]; then
+                                        cd /source/workspace/${RESULTS_DIR}
                                         tar -czf - . 2>&1
                                     else
-                                        echo '⚠️  Results directory not found' >&2
+                                        echo '⚠️  Results directory not found at /source/workspace/${RESULTS_DIR}' >&2
                                         exit 1
                                     fi
                                 " > ${RESULTS_DIR}/results.tar.gz 2>${RESULTS_DIR}/tar_errors.log || {
