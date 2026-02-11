@@ -704,6 +704,7 @@ pipeline {
                         
                         echo "📊 Results:"
                         ls -la ${RESULTS_DIR}/ || echo "   No results found"
+                        exit \$EXIT_CODE
                     """
                 }
             }

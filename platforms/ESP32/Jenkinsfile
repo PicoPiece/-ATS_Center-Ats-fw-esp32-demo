@@ -88,7 +88,7 @@ device:
 
 test_plan:
   - gpio_toggle_test
-  - oled_display_test
+  - tft_lcd_test
 
 timestamps:
   build_time: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
