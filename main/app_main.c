@@ -108,21 +108,26 @@ static const uint8_t font_5x7_lower[26][5] = {
     { 0x44, 0x64, 0x54, 0x4C, 0x44 }, /* z */
 };
 
-/* TFT 160x128 SPI pins - wire hardware to these GPIOs */
-#if defined(SPI2_HOST)
-#define TFT_SPI_HOST         SPI2_HOST
+/* TFT 128x160 SPI – dùng VSPI (SPI3) vì chân 18/23/5 là native VSPI trên ESP32 */
+#if defined(SPI3_HOST)
+#define TFT_SPI_HOST         SPI3_HOST   /* VSPI – native pins: SCK=18, MOSI=23, CS=5 */
+#elif defined(VSPI_HOST)
+#define TFT_SPI_HOST         VSPI_HOST   /* IDF 4.x */
 #else
-#define TFT_SPI_HOST         HSPI_HOST   /* IDF 4.x */
+#define TFT_SPI_HOST         SPI2_HOST   /* fallback */
 #endif
-#define TFT_SCK_GPIO         18
-#define TFT_MOSI_GPIO        23   /* SDA on display module */
-#define TFT_CS_GPIO          4
-#define TFT_RST_GPIO         15  /* Res */
-#define TFT_DC_GPIO          32  /* Rs (DC/register select) */
-#define TFT_SPI_CLOCK_HZ     (10 * 1000 * 1000)
+#define TFT_SCK_GPIO         18  /* SCLK */
+#define TFT_MOSI_GPIO        23  /* SDA */
+#define TFT_CS_GPIO          5   /* CS = 5 (mẫu dùng 5; nếu board cũ dùng 4 thì đổi lại) */
+#define TFT_RST_GPIO         15  /* RST */
+#define TFT_DC_GPIO          32  /* DC/AO */
+#define TFT_SPI_CLOCK_HZ     (TFT_SPI_CLOCK_SLOW ? (4 * 1000 * 1000) : (10 * 1000 * 1000))
 
-#define TFT_WIDTH            160
+#define TFT_WIDTH            160  /* Sau rotation 1: width=160, height=128 */
 #define TFT_HEIGHT           128
+#define TFT_COL_OFFSET       0   /* Rotation 1 swap: xstart=rowstart=1 */
+#define TFT_ROW_OFFSET       0   /* Rotation 1 swap: ystart=colstart=2 */
+#define TFT_SPI_CLOCK_SLOW   1
 
 /* ST7735 / ST77xx commands */
 #define ST77XX_SWRESET   0x01
@@ -179,16 +184,18 @@ static void tft_hw_reset(void)
 
 static void tft_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
+    uint16_t c0 = x0 + TFT_COL_OFFSET, c1 = x1 + TFT_COL_OFFSET;
+    uint16_t r0 = y0 + TFT_ROW_OFFSET, r1 = y1 + TFT_ROW_OFFSET;
     tft_write_cmd(ST77XX_CASET);
-    uint8_t col[] = { (uint8_t)(x0 >> 8), (uint8_t)(x0 & 0xFF), (uint8_t)(x1 >> 8), (uint8_t)(x1 & 0xFF) };
+    uint8_t col[] = { (uint8_t)(c0 >> 8), (uint8_t)(c0 & 0xFF), (uint8_t)(c1 >> 8), (uint8_t)(c1 & 0xFF) };
     tft_write_data(col, 4);
     tft_write_cmd(ST77XX_RASET);
-    uint8_t row[] = { (uint8_t)(y0 >> 8), (uint8_t)(y0 & 0xFF), (uint8_t)(y1 >> 8), (uint8_t)(y1 & 0xFF) };
+    uint8_t row[] = { (uint8_t)(r0 >> 8), (uint8_t)(r0 & 0xFF), (uint8_t)(r1 >> 8), (uint8_t)(r1 & 0xFF) };
     tft_write_data(row, 4);
     tft_write_cmd(ST77XX_RAMWR);
 }
 
-/* Fill full screen with RGB565 color (big-endian as sent: high byte first). */
+/* Fill full screen with RGB565. Một số panel cần low byte trước: đổi thành buf[i]=lo, buf[i+1]=hi */
 static void tft_fill_screen_rgb565(uint16_t color)
 {
     uint8_t hi = (uint8_t)(color >> 8), lo = (uint8_t)(color & 0xFF);
@@ -196,7 +203,7 @@ static void tft_fill_screen_rgb565(uint16_t color)
     gpio_set_level(TFT_DC_GPIO, 1);
     const size_t chunk = 1024;
     uint8_t buf[chunk];
-    for (size_t i = 0; i < chunk; i += 2) { buf[i] = hi; buf[i + 1] = lo; }
+    for (size_t i = 0; i < chunk; i += 2) { buf[i] = hi; buf[i + 1] = lo; }  /* high byte first */
     size_t total = (size_t)TFT_WIDTH * TFT_HEIGHT * 2;
     for (size_t sent = 0; sent < total; sent += chunk) {
         size_t n = (total - sent) < chunk ? (total - sent) : chunk;
@@ -205,8 +212,8 @@ static void tft_fill_screen_rgb565(uint16_t color)
     }
 }
 
-/* Draw one 5x7 character at (x,y), fg in RGB565. Background not drawn (transparent). */
-static void tft_draw_char_5x7(uint16_t x, uint16_t y, char c, uint16_t fg)
+/* Draw one 5x7 character at (x,y) with scale factor, fg in RGB565. */
+static void tft_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t fg, int scale)
 {
     const uint8_t *col;
     if (c >= 0x20 && c <= 0x5F) {
@@ -217,43 +224,58 @@ static void tft_draw_char_5x7(uint16_t x, uint16_t y, char c, uint16_t fg)
         col = font_5x7[0];
     }
     uint8_t fg_hi = (uint8_t)(fg >> 8), fg_lo = (uint8_t)(fg & 0xFF);
+    /* Mỗi pixel font → khối scale×scale pixel trên LCD */
     for (int cx = 0; cx < FONT5X7_W; cx++) {
         for (int row = 0; row < FONT5X7_H; row++) {
             if ((col[cx] >> row) & 1) {
-                tft_set_window(x + cx, y + row, x + cx, y + row);
+                uint16_t px0 = x + cx * scale;
+                uint16_t py0 = y + row * scale;
+                tft_set_window(px0, py0, px0 + scale - 1, py0 + scale - 1);
                 gpio_set_level(TFT_DC_GPIO, 1);
-                uint8_t px[] = { fg_hi, fg_lo };
-                spi_transaction_t t = { .length = 16, .tx_buffer = px };
+                uint8_t buf[scale * scale * 2];
+                for (int i = 0; i < scale * scale; i++) {
+                    buf[i * 2]     = fg_hi;
+                    buf[i * 2 + 1] = fg_lo;
+                }
+                spi_transaction_t t = { .length = scale * scale * 16, .tx_buffer = buf };
                 spi_device_polling_transmit(tft_spi_handle, &t);
             }
         }
     }
 }
 
-/* Draw string at (x,y), return pixel width. */
-static int tft_draw_string_5x7(uint16_t x, uint16_t y, const char *s, uint16_t fg)
+/* Draw string at (x,y) with scale, return pixel width. */
+static int tft_draw_string_scaled(uint16_t x, uint16_t y, const char *s, uint16_t fg, int scale)
 {
     int cx = 0;
+    int stride = FONT5X7_STRIDE * scale;
     while (*s) {
-        tft_draw_char_5x7(x + cx, y, *s, fg);
-        cx += FONT5X7_STRIDE;
+        tft_draw_char_scaled(x + cx, y, *s, fg, scale);
+        cx += stride;
         s++;
     }
     return cx;
 }
 
-/* String pixel width (for centering). */
-static int tft_string_width_px(const char *s)
+/* String pixel width with scale (for centering). */
+static int tft_string_width_scaled(const char *s, int scale)
 {
-    return (int)strlen(s) * FONT5X7_STRIDE;
+    return (int)strlen(s) * FONT5X7_STRIDE * scale;
 }
 
+/* Backward compat wrappers (scale=1) */
+static int tft_draw_string_5x7(uint16_t x, uint16_t y, const char *s, uint16_t fg)
+{ return tft_draw_string_scaled(x, y, s, fg, 1); }
+static int tft_string_width_px(const char *s)
+{ return tft_string_width_scaled(s, 1); }
+
+/* Nếu màn vẫn nhiễu/sai màu, thử: (1) Đổi INVON <-> INVOFF  (2) Đổi madctl: 0xC8, 0xA8, 0x68, 0xC0 */
 static void tft_display_init(void)
 {
     tft_hw_reset();
 
     tft_write_cmd(ST77XX_SWRESET);
-    vTaskDelay(pdMS_TO_TICKS(150));
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     tft_write_cmd(ST77XX_SLPOUT);
     vTaskDelay(pdMS_TO_TICKS(255));
@@ -289,8 +311,9 @@ static void tft_display_init(void)
     tft_write_cmd(ST7735_VMCTR1);
     tft_write_data(&vm, 1);
 
-    tft_write_cmd(ST77XX_INVOFF);   /* normal: 0=dark, 1=light. Nếu nền sáng chữ tối thì đổi thành ST77XX_INVON */
-    uint8_t madctl = 0xC8;          /* row/col, bottom-top (ST7735R green/red tab) */
+    tft_write_cmd(ST77XX_INVOFF);  /* INITR_GREENTAB: no invert */
+    /* MADCTL 0xA8 = setRotation(1) green tab: MY|MV|BGR (giống mẫu ESP32TFT_128x160B) */
+    uint8_t madctl = 0xA8;
     tft_write_cmd(ST77XX_MADCTL);
     tft_write_data(&madctl, 1);
     uint8_t colmod = 0x05;          /* 16-bit RGB565 */
@@ -330,17 +353,22 @@ static esp_err_t tft_spi_init(void)
         .sclk_io_num = TFT_SCK_GPIO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 0,
+        .max_transfer_sz = TFT_WIDTH * TFT_HEIGHT * 2 + 8,
     };
-    err = spi_bus_initialize(TFT_SPI_HOST, &bus_cfg, 0);
+    err = spi_bus_initialize(TFT_SPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) return err;
 
     spi_device_interface_config_t dev_cfg = {
+        .mode = 0,                                   /* SPI mode 0 (CPOL=0, CPHA=0) */
         .clock_speed_hz = TFT_SPI_CLOCK_HZ,
         .spics_io_num = TFT_CS_GPIO,
-        .queue_size = 7,
+        .flags = SPI_DEVICE_NO_DUMMY,                /* giống TFT_eSPI; không thêm dummy cycle */
+        .queue_size = 1,
     };
-    return spi_bus_add_device(TFT_SPI_HOST, &dev_cfg, &tft_spi_handle);
+    esp_err_t ret = spi_bus_add_device(TFT_SPI_HOST, &dev_cfg, &tft_spi_handle);
+    ESP_LOGI("SPI", "bus_init OK, add_device ret=%s, host=%d, cs=%d, clk=%d",
+             esp_err_to_name(ret), (int)TFT_SPI_HOST, TFT_CS_GPIO, TFT_SPI_CLOCK_HZ);
+    return ret;
 }
 
 void app_main(void)
@@ -354,29 +382,55 @@ void app_main(void)
         ESP_LOGI(TAG, "TFT SPI init OK (SCK=%d, SDA/MOSI=%d, CS=%d, Res=%d, Rs=%d)",
                  TFT_SCK_GPIO, TFT_MOSI_GPIO, TFT_CS_GPIO, TFT_RST_GPIO, TFT_DC_GPIO);
         tft_display_init();
-        /* LCD colors RGB565: 0x0000=black, 0xFFFF=white, 0x0010=dark blue. Background black, text white for readability. */
-        tft_fill_screen_rgb565(0x0000);  /* background black */
-        {
-            const char *line1 = "Welcome RKTech";
-            const char *line2 = "ATS_Demo";
-            const int line_h = FONT5X7_H + 1;
-            const int gap = 4;
-            int block_h = 2 * line_h + gap;
-            int y0 = (TFT_HEIGHT - block_h) / 2;
-            int x1 = (TFT_WIDTH - tft_string_width_px(line1)) / 2;
-            int x2 = (TFT_WIDTH - tft_string_width_px(line2)) / 2;
-            uint16_t fg = 0xFFFF;  /* white */
-            tft_draw_string_5x7(x1, y0, line1, fg);
-            tft_draw_string_5x7(x2, y0 + line_h + gap, line2, fg);
+
+        /* Bước 1: test màu – đỏ -> xanh lá -> xanh dương, mỗi màu 1s */
+        tft_fill_screen_rgb565(0xF800);   /* Red */
+        ESP_LOGI(TAG, "LCD Red");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        tft_fill_screen_rgb565(0x07E0);   /* Green */
+        ESP_LOGI(TAG, "LCD Green");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        tft_fill_screen_rgb565(0x001F);   /* Blue */
+        ESP_LOGI(TAG, "LCD Blue");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        /* Bước 2: hiển thị text RKTech trên nền đen */
+        tft_fill_screen_rgb565(0x0000);   /* Black background */
+
+        /* Dòng 1: "Welcome RKTech" – căn giữa, chữ trắng */
+        const char *line1 = "Welcome RKTech";
+        int w1 = tft_string_width_px(line1);
+        int x1 = (TFT_WIDTH - w1) / 2;
+        int y1 = TFT_HEIGHT / 2 - FONT5X7_H - 5;
+        tft_draw_string_5x7(x1, y1, line1, 0xFFFF);
+
+        /* Dòng 2: "ATS_Demo" – căn giữa, chữ vàng */
+        const char *line2 = "ATS_Demo";
+        int w2 = tft_string_width_px(line2);
+        int x2 = (TFT_WIDTH - w2) / 2;
+        int y2 = TFT_HEIGHT / 2 - 1;
+        tft_draw_string_5x7(x2, y2, line2, 0xFFE0);
+
+        /* Dòng 3: "ESP32_IoT_LCD" – căn giữa, chữ cyan */
+        const char *line3 = "ESP32_IoT_LCD";
+        int w3 = tft_string_width_px(line3);
+        int x3 = (TFT_WIDTH - w3) / 2;
+        int y3 = TFT_HEIGHT / 2 + FONT5X7_H + 3;
+        tft_draw_string_5x7(x3, y3, line3, 0x07FF);
+
+        ESP_LOGI(TAG, "Text displayed on LCD");
+
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
-        ESP_LOGI(TAG, "TFT display on (Welcome RKTech / ATS_Demo)");
     } else {
         ESP_LOGW(TAG, "TFT SPI init failed: %s", esp_err_to_name(err));
-    }
-
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        ESP_LOGI(TAG, "Running...");
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            ESP_LOGI(TAG, "Running...");
+        }
     }
 }
 
