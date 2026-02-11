@@ -133,6 +133,21 @@ static const uint8_t font_5x7_lower[26][5] = {
 #define ST77XX_RASET     0x2B
 #define ST77XX_RAMWR     0x2C
 #define ST77XX_DISPON    0x29
+#define ST77XX_NORON     0x13
+#define ST77XX_INVOFF    0x20
+#define ST77XX_INVON     0x21
+#define ST7735_FRMCTR1   0xB1
+#define ST7735_FRMCTR2   0xB2
+#define ST7735_FRMCTR3   0xB3
+#define ST7735_INVCTR    0xB4
+#define ST7735_PWCTR1    0xC0
+#define ST7735_PWCTR2    0xC1
+#define ST7735_PWCTR3    0xC2
+#define ST7735_PWCTR4    0xC3
+#define ST7735_PWCTR5    0xC4
+#define ST7735_VMCTR1    0xC5
+#define ST7735_GMCTRP1   0xE0
+#define ST7735_GMCTRN1   0xE1
 
 static spi_device_handle_t tft_spi_handle;
 
@@ -243,15 +258,55 @@ static void tft_display_init(void)
     tft_write_cmd(ST77XX_SLPOUT);
     vTaskDelay(pdMS_TO_TICKS(255));
 
-    tft_write_cmd(ST77XX_COLMOD);
-    uint8_t colmod = 0x05;  /* 16-bit RGB565 */
-    tft_write_data(&colmod, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    /* ST7735R-style init for 1.77" 160x128 - frame rate, power, inversion */
+    uint8_t d3[] = { 0x01, 0x2C, 0x2D };
+    tft_write_cmd(ST7735_FRMCTR1);
+    tft_write_data(d3, 3);
+    tft_write_cmd(ST7735_FRMCTR2);
+    tft_write_data(d3, 3);
+    uint8_t d6[] = { 0x01, 0x2C, 0x2D, 0x01, 0x2C, 0x2D };
+    tft_write_cmd(ST7735_FRMCTR3);
+    tft_write_data(d6, 6);
+    uint8_t inv = 0x07;  /* no inversion */
+    tft_write_cmd(ST7735_INVCTR);
+    tft_write_data(&inv, 1);
+    uint8_t pw1[] = { 0xA2, 0x02, 0x84 };
+    tft_write_cmd(ST7735_PWCTR1);
+    tft_write_data(pw1, 3);
+    uint8_t pw2 = 0xC5;
+    tft_write_cmd(ST7735_PWCTR2);
+    tft_write_data(&pw2, 1);
+    uint8_t pw3[] = { 0x0A, 0x00 };
+    tft_write_cmd(ST7735_PWCTR3);
+    tft_write_data(pw3, 2);
+    uint8_t pw4[] = { 0x8A, 0x2A };
+    tft_write_cmd(ST7735_PWCTR4);
+    tft_write_data(pw4, 2);
+    uint8_t pw5[] = { 0x8A, 0xEE };
+    tft_write_cmd(ST7735_PWCTR5);
+    tft_write_data(pw5, 2);
+    uint8_t vm = 0x0E;
+    tft_write_cmd(ST7735_VMCTR1);
+    tft_write_data(&vm, 1);
 
+    tft_write_cmd(ST77XX_INVOFF);   /* normal: 0=dark, 1=light. Nếu nền sáng chữ tối thì đổi thành ST77XX_INVON */
+    uint8_t madctl = 0xC8;          /* row/col, bottom-top (ST7735R green/red tab) */
     tft_write_cmd(ST77XX_MADCTL);
-    uint8_t madctl = 0x08;  /* Row/col, bottom-top */
     tft_write_data(&madctl, 1);
+    uint8_t colmod = 0x05;          /* 16-bit RGB565 */
+    tft_write_cmd(ST77XX_COLMOD);
+    tft_write_data(&colmod, 1);
 
+    /* Gamma (optional but helps stability/colors) */
+    uint8_t gmp[] = { 0x02, 0x1c, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2d, 0x29, 0x25, 0x2B, 0x39, 0x00, 0x01, 0x03, 0x10 };
+    tft_write_cmd(ST7735_GMCTRP1);
+    tft_write_data(gmp, 16);
+    uint8_t gmn[] = { 0x03, 0x1d, 0x07, 0x06, 0x2E, 0x2C, 0x29, 0x2D, 0x2E, 0x2E, 0x37, 0x3F, 0x00, 0x00, 0x02, 0x10 };
+    tft_write_cmd(ST7735_GMCTRN1);
+    tft_write_data(gmn, 16);
+
+    tft_write_cmd(ST77XX_NORON);
+    vTaskDelay(pdMS_TO_TICKS(10));
     tft_write_cmd(ST77XX_DISPON);
     vTaskDelay(pdMS_TO_TICKS(100));
 }
