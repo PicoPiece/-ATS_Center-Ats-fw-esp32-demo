@@ -20,7 +20,7 @@ pipeline {
         choice(
             name: 'IMAGE_SOURCE',
             choices: ['registry', 'build'],
-            description: 'Unused: pipeline always builds ats-node-test from latest ats-ats-node'
+            description: 'How to get ats-node-test image: pull from registry or build on agent'
         )
         string(
             name: 'ATS_NODE_TEST_IMAGE',
@@ -164,61 +164,282 @@ pipeline {
             }
         }
 
-        stage('Build ATS Node Test Image from Latest') {
-            agent { label "${params.ATS_NODE_LABEL}" }
-            steps {
-                dir(WORKSPACE_DIR) {
-                    sh """
-                        #!/bin/bash
-                        set -eu
-                        echo "🐳 Building ATS node test image from latest ats-ats-node (always ensure up-to-date)"
-                        WORKSPACE_ABS=\$(pwd)
-                        echo "   Workspace: \$WORKSPACE_ABS"
-                        echo ""
-                        
-                        if [ ! -d "\${WORKSPACE_ABS}/ats-ats-node" ]; then
-                            echo "📦 Cloning ats-ats-node..."
-                            git clone https://github.com/PicoPiece/ats-ats-node.git ats-ats-node || { echo "❌ Failed to clone ats-ats-node"; exit 1; }
-                        else
-                            echo "📦 Pulling latest ats-ats-node..."
-                            cd \${WORKSPACE_ABS}/ats-ats-node
-                            git fetch origin && git pull origin main || { echo "⚠️  git pull failed, using existing code"; true; }
-                            cd "\$WORKSPACE_ABS"
-                        fi
-                        
-                        if [ -d "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test" ] && [ -f "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile" ]; then
-                            echo "🔨 Building image: ${params.ATS_NODE_TEST_IMAGE}"
-                            cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
-                            if docker buildx version > /dev/null 2>&1; then
-                                export DOCKER_BUILDKIT=1
-                            fi
-                            docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
-                            echo "✅ Image built from latest ats-ats-node: ${params.ATS_NODE_TEST_IMAGE}"
-                        else
-                            echo "❌ ERROR: Dockerfile not found at \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/"
-                            ls -la "\${WORKSPACE_ABS}/ats-ats-node/" || true
-                            exit 1
-                        fi
-                    """
-                }
-            }
-        }
-
         stage('Prepare ATS Node Test Container') {
             agent { label "${params.ATS_NODE_LABEL}" }
             steps {
                 script {
-                    // Image already built from latest in previous stage; just verify it exists
-                    echo "📋 Verifying ATS node test image (built from latest ats-ats-node)"
-                    echo "   Image: ${params.ATS_NODE_TEST_IMAGE}"
-                    def img = sh(
-                        script: "docker images -q ${params.ATS_NODE_TEST_IMAGE}",
-                        returnStdout: true
-                    ).trim()
-                    if (!img) {
-                        error("ATS node test image not found: ${params.ATS_NODE_TEST_IMAGE}. Build stage may have failed.")
+                    if (params.IMAGE_SOURCE == 'registry') {
+                        // Option 1: Pull from registry (fast, recommended)
+                        echo "📥 Pulling ATS node test image from registry..."
+                        echo "   Image: ${params.ATS_NODE_TEST_IMAGE}"
+                        
+                        sh """
+                            echo "   Platform: \$(uname -m)"
+                            echo "   Architecture: \$(uname -a)"
+                        """
+                        
+                        // Use the full image name from parameter (should include registry)
+                        def imageToPull = params.ATS_NODE_TEST_IMAGE
+                        if (!imageToPull.contains('/') && !imageToPull.contains('.')) {
+                            // If no registry prefix, assume it's just the name and add default
+                            imageToPull = "ghcr.io/picopiece/${imageToPull}"
+                            echo "   ⚠️  Warning: Image name missing registry prefix, using: ${imageToPull}"
+                        }
+                        
+                        // Try to login to GHCR if credentials are available (optional)
+                        def ghcrCredsId = params.GHCR_CREDENTIALS_ID ?: env.GHCR_CREDENTIALS_ID ?: ''
+                        def pullSuccess = false
+                        
+                        // #region agent log
+                        echo """
+                        🔍 DEBUG: Credentials check
+                          params.GHCR_CREDENTIALS_ID: ${params.GHCR_CREDENTIALS_ID ?: 'NOT SET'}
+                          env.GHCR_CREDENTIALS_ID: ${env.GHCR_CREDENTIALS_ID ?: 'NOT SET'}
+                          Final ghcrCredsId: ${ghcrCredsId ?: 'EMPTY'}
+                          Image to pull: ${imageToPull}
+                        """
+                        // #endregion
+                        
+                        if (ghcrCredsId && ghcrCredsId != '') {
+                            echo "🔐 Attempting to login to GHCR with credentials ID: ${ghcrCredsId}"
+                            try {
+                                withCredentials([usernamePassword(credentialsId: ghcrCredsId,
+                                                 usernameVariable: 'GHCR_USER',
+                                                 passwordVariable: 'GHCR_TOKEN')]) {
+                                    sh """
+                                        # #region agent log
+                                        echo "DEBUG: GHCR_USER length: \${#GHCR_USER}"
+                                        echo "DEBUG: GHCR_TOKEN length: \${#GHCR_TOKEN}"
+                                        echo "DEBUG: GHCR_TOKEN starts with: \${GHCR_TOKEN:0:10}..."
+                                        # #endregion
+                                        
+                                        echo "Logging into GHCR..."
+                                        LOGIN_OUTPUT=\$(echo "\$GHCR_TOKEN" | docker login ghcr.io -u "\$GHCR_USER" --password-stdin 2>&1)
+                                        LOGIN_EXIT=\$?
+                                        echo "\$LOGIN_OUTPUT"
+                                        
+                                        if [ \$LOGIN_EXIT -eq 0 ]; then
+                                            echo "✅ GHCR login successful"
+                                            
+                                            # #region agent log
+                                            echo "DEBUG: Verifying login by checking docker config"
+                                            cat ~/.docker/config.json | grep -A 2 "ghcr.io" || echo "DEBUG: No ghcr.io entry in docker config"
+                                            # #endregion
+                                            
+                                            echo "📥 Pulling image: ${imageToPull}"
+                                            PULL_OUTPUT=\$(docker pull ${imageToPull} 2>&1)
+                                            PULL_EXIT=\$?
+                                            echo "\$PULL_OUTPUT"
+                                            
+                                            if [ \$PULL_EXIT -eq 0 ]; then
+                                                echo "✅ Image pulled successfully"
+                                                docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true
+                                            else
+                                                echo "❌ Image pull failed with exit code: \$PULL_EXIT"
+                                                exit 1
+                                            fi
+                                        else
+                                            echo "❌ GHCR login failed with exit code: \$LOGIN_EXIT"
+                                            echo "   Output: \$LOGIN_OUTPUT"
+                                            exit 1
+                                        fi
+                                    """
+                                }
+                                pullSuccess = true
+                                echo "✅ Image pulled successfully: ${imageToPull}"
+                            } catch (Exception e) {
+                                echo "⚠️  Failed to use credentials ${ghcrCredsId}: ${e.getMessage()}"
+                                echo "   Exception type: ${e.getClass().getName()}"
+                                echo "   Will try pull without login (works if image is public)"
+                                
+                                // Fallback: try pull without credentials
+                                def pullOutput = sh(
+                                    script: "docker pull ${imageToPull} 2>&1",
+                            returnStatus: true
+                                )
+                                pullSuccess = pullOutput == 0
+                        
+                        if (pullSuccess) {
+                                    echo "✅ Image pulled successfully (public): ${imageToPull}"
+                                    sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
+                                } else {
+                                    echo "❌ Public pull also failed"
+                                }
+                            }
+                        } else {
+                            echo "ℹ️  No GHCR credentials provided, trying public pull..."
+                            // #region agent log
+                            echo "DEBUG: Attempting public pull for: ${imageToPull}"
+                            echo "DEBUG: Platform: \$(uname -m)"
+                            echo "DEBUG: Checking if image exists and is public..."
+                            // #endregion
+                            
+                            // Try to pull - if fails, provide clear guidance
+                            def pullScript = """
+                                PULL_OUTPUT=\$(docker pull ${imageToPull} 2>&1)
+                                PULL_EXIT=\$?
+                                echo "\$PULL_OUTPUT"
+                                
+                                if [ \$PULL_EXIT -ne 0 ]; then
+                                    echo ""
+                                    echo "❌ Public pull failed"
+                                    echo ""
+                                    echo "🔍 Error analysis:"
+                                    if echo "\$PULL_OUTPUT" | grep -q "unauthorized"; then
+                                        echo "   ✅ CONFIRMED: Image is PRIVATE (requires authentication)"
+                                        echo ""
+                                        echo "   Solutions:"
+                                        echo "   1. Make image public:"
+                                        echo "      GitHub → Packages → ats-node-test → Settings → Change visibility → Public"
+                                        echo ""
+                                        echo "   2. Use credentials:"
+                                        echo "      - Set GHCR_CREDENTIALS_ID parameter in pipeline"
+                                        echo "      - Or create credentials in Jenkins with read:packages scope"
+                                    elif echo "\$PULL_OUTPUT" | grep -q "manifest unknown"; then
+                                        echo "   ✅ CONFIRMED: Image doesn't exist or wrong tag"
+                                        echo "   Check: docker manifest inspect ${imageToPull}"
+                                    elif echo "\$PULL_OUTPUT" | grep -q "no space"; then
+                                        echo "   ✅ CONFIRMED: Disk space issue"
+                                    else
+                                        echo "   Unknown error - see output above"
+                                    fi
+                                fi
+                                
+                                exit \$PULL_EXIT
+                            """
+                            
+                            def pullOutput = sh(
+                                script: pullScript,
+                                returnStatus: true
+                            )
+                            pullSuccess = pullOutput == 0
+                            
+                            if (pullSuccess) {
+                                echo "✅ Image pulled successfully: ${imageToPull}"
+                                sh "docker tag ${imageToPull} ${params.ATS_NODE_TEST_IMAGE} || true"
+                            } else {
+                                echo ""
+                                echo "⚠️  Cannot pull image - will fall back to building on agent"
+                            }
+                        }
+                        
+                        if (!pullSuccess) {
+                            echo "⚠️  Failed to pull image from registry"
+                            echo ""
+                            sh """
+                                echo "   Error details:"
+                                docker pull ${params.ATS_NODE_TEST_IMAGE} 2>&1 | head -5 || true
+                                echo ""
+                                echo "   Common reasons:"
+                                echo "   1. Image is private and requires authentication"
+                                echo "      → Setup GHCR_CREDENTIALS_ID in Jenkins or make image public"
+                                echo "   2. Image doesn't exist for this platform (\$(uname -m))"
+                                echo "      → Check registry for available platforms"
+                                echo "   3. Network/registry connectivity issue"
+                                echo "      → Check network/firewall settings"
+                                echo ""
+                                echo "   Note: Falling back to local build (this may take longer)"
+                                echo ""
+                            """
+                            echo "   Falling back to build on agent..."
+                            // Fall back to build with hotfix
+                            dir(WORKSPACE_DIR) {
+                                sh """
+                                    #!/bin/bash
+                                    set -eu
+                                    echo "🔍 Current directory: \$(pwd)"
+                                    # Compute absolute workspace path
+                                    WORKSPACE_ABS=\$(pwd)
+                                    echo "🔍 WORKSPACE_ABS: \$WORKSPACE_ABS"
+                                    echo ""
+                                    
+                                    # Ensure ats-ats-node repo exists under WORKSPACE_ABS
+                                    if [ ! -d "\${WORKSPACE_ABS}/ats-ats-node" ]; then
+                                        echo "📦 Cloning ats-ats-node into \${WORKSPACE_ABS}/ats-ats-node..."
+                                        git clone https://github.com/PicoPiece/ats-ats-node.git ats-ats-node || {
+                                        echo "❌ Failed to clone ats-ats-node"
+                                        exit 1
+                                    }
+                                    else
+                                        echo "📦 ats-ats-node already exists, pulling latest..."
+                                        cd \${WORKSPACE_ABS}/ats-ats-node
+                                        git pull origin main || echo "⚠️  git pull failed, using existing code"
+                                    fi
+                                    
+                                    # Verify directory and Dockerfile
+                                    if [ -d "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test" ] && [ -f "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile" ]; then
+                                        echo "🐳 Build context ready: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test"
+                                        cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
+                                        
+                                        # Check if buildx is available, if not disable BuildKit
+                                        if docker buildx version > /dev/null 2>&1; then
+                                            export DOCKER_BUILDKIT=1
+                                            echo "🧰 Building ATS node test image with BuildKit..."
+                                        else
+                                            echo "⚠️  BuildKit/buildx not available, using legacy builder..."
+                                            unset DOCKER_BUILDKIT || true
+                                        fi
+                                        docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
+                                    echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
+                                else
+                                        echo "❌ ERROR: Dockerfile not found at expected location: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile"
+                                        echo "Repository layout:"
+                                        ls -lah \${WORKSPACE_ABS}/ats-ats-node || true
+                                    exit 1
+                                fi
+                            """
+                            }
+                        }
+                    } else {
+                        // Option 2: Build on agent (slow, but works without registry)
+                        echo "🔨 Building ATS node test container on agent..."
+                        dir(WORKSPACE_DIR) {
+                        sh """
+                                #!/bin/bash
+                                set -eu
+                                echo "🔍 Current directory: \$(pwd)"
+                                # Compute absolute workspace path
+                                WORKSPACE_ABS=\$(pwd)
+                                echo "🔍 WORKSPACE_ABS: \$WORKSPACE_ABS"
+                                echo ""
+                                
+                                # Ensure ats-ats-node repo exists under WORKSPACE_ABS
+                                if [ ! -d "\${WORKSPACE_ABS}/ats-ats-node" ]; then
+                                    echo "📦 Cloning ats-ats-node into \${WORKSPACE_ABS}/ats-ats-node..."
+                                    git clone https://github.com/PicoPiece/ats-ats-node.git ats-ats-node || {
+                                    echo "❌ Failed to clone ats-ats-node"
+                                    exit 1
+                                }
+                                else
+                                    echo "📦 ats-ats-node already exists, pulling latest..."
+                                    cd \${WORKSPACE_ABS}/ats-ats-node
+                                    git pull origin main || echo "⚠️  git pull failed, using existing code"
+                                fi
+                                
+                                # Verify directory and Dockerfile
+                                if [ -d "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test" ] && [ -f "\${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile" ]; then
+                                    echo "🐳 Build context ready: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test"
+                                    cd \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test
+                                    
+                                    # Check if buildx is available, if not disable BuildKit
+                                    if docker buildx version > /dev/null 2>&1; then
+                                        export DOCKER_BUILDKIT=1
+                                        echo "🧰 Building ATS node test image with BuildKit..."
+                                    else
+                                        echo "⚠️  BuildKit/buildx not available, using legacy builder..."
+                                        unset DOCKER_BUILDKIT || true
+                                    fi
+                                    docker build --pull -t ${params.ATS_NODE_TEST_IMAGE} .
+                                echo "✅ Container built: ${params.ATS_NODE_TEST_IMAGE}"
+                            else
+                                    echo "❌ ERROR: Dockerfile not found at expected location: \${WORKSPACE_ABS}/ats-ats-node/docker/ats-node-test/Dockerfile"
+                                    echo "Repository layout:"
+                                    ls -lah \${WORKSPACE_ABS}/ats-ats-node || true
+                                exit 1
+                            fi
+                        """
+                        }
                     }
-                    echo "✅ Image found, ready for test stage"
                 }
             }
         }
@@ -388,22 +609,6 @@ pipeline {
                         # Use Docker volume if we're in Docker-in-Docker scenario, otherwise use bind mount
                         echo "🚀 Running ATS test container..."
                         
-                        # Detect serial port on host/agent for ESP32 flash (pass into container so flash can use it)
-                        SERIAL_PORT=""
-                        for p in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0 /dev/ttyACM1; do
-                            if [ -e "\$p" ]; then
-                                SERIAL_PORT="\$p"
-                                break
-                            fi
-                        done
-                        if [ -n "\${SERIAL_PORT}" ]; then
-                            echo "   Serial port on agent: \${SERIAL_PORT} (will pass to container as SERIAL_PORT)"
-                            SERIAL_ENV="-e SERIAL_PORT=\${SERIAL_PORT}"
-                        else
-                            echo "   ⚠️  No serial port found on agent (no /dev/ttyUSB* or /dev/ttyACM*). ESP32 flash will fail unless USB is passed through."
-                            SERIAL_ENV=""
-                        fi
-                        
                         if [ "\${USE_VOLUME}" = "true" ]; then
                             echo "   Using Docker volume: \${WORKSPACE_VOLUME} -> /workspace"
                             docker run --rm --privileged \\
@@ -413,7 +618,6 @@ pipeline {
                                 -v /dev/gpiomem:/dev/gpiomem \\
                                 -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                                 -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
-                                \${SERIAL_ENV} \\
                                 ${params.ATS_NODE_TEST_IMAGE}
                             
                             EXIT_CODE=\$?
@@ -487,7 +691,6 @@ pipeline {
                             -v /dev/gpiomem:/dev/gpiomem \\
                             -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                             -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
-                            \${SERIAL_ENV} \\
                             ${params.ATS_NODE_TEST_IMAGE}
                         
                             EXIT_CODE=\$?
@@ -495,14 +698,35 @@ pipeline {
                         
                         if [ \$EXIT_CODE -eq 0 ]; then
                             echo "✅ Test execution completed successfully"
+                        elif [ \$EXIT_CODE -eq 1 ]; then
+                            echo "⚠️  Test execution completed with test failures (exit code 1) — will mark build UNSTABLE"
                         else
                             echo "❌ Test execution failed with exit code: \$EXIT_CODE"
                         fi
                         
                         echo "📊 Results:"
                         ls -la ${RESULTS_DIR}/ || echo "   No results found"
-                        exit \$EXIT_CODE
+                        
+                        # Persist exit code so pipeline can set UNSTABLE (1) vs FAILURE (2+); stage must not fail so Archive runs
+                        echo \$EXIT_CODE > ${RESULTS_DIR}/.exitcode
+                        exit 0
                     """
+                        script {
+                            if (!fileExists("${RESULTS_DIR}/.exitcode")) {
+                                echo "⚠️  .exitcode not found, assuming run error"
+                                currentBuild.result = 'FAILURE'
+                                error("Test stage did not produce .exitcode")
+                                return
+                            }
+                            def exitCode = readFile("${RESULTS_DIR}/.exitcode").trim().toInteger()
+                            if (exitCode == 1) {
+                                currentBuild.result = 'UNSTABLE'
+                                echo "⚠️  Build set to UNSTABLE (some tests failed; results archived)"
+                            } else if (exitCode != 0) {
+                                currentBuild.result = 'FAILURE'
+                                error("Test container exited with code ${exitCode}")
+                            }
+                        }
                 }
             }
         }
@@ -567,6 +791,9 @@ pipeline {
     post {
         success {
             echo "✅ Firmware tested successfully on ATS node"
+        }
+        unstable {
+            echo "⚠️  Firmware test completed with test failures (UNSTABLE); check ats-summary.json and JUnit for details"
         }
         failure {
             echo "❌ Firmware test failed"
