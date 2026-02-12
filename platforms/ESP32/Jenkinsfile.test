@@ -404,6 +404,7 @@ pipeline {
                             SERIAL_ENV=""
                         fi
                         
+                        EXIT_CODE=0
                         if [ "\${USE_VOLUME}" = "true" ]; then
                             echo "   Using Docker volume: \${WORKSPACE_VOLUME} -> /workspace"
                             docker run --rm --privileged \\
@@ -416,9 +417,7 @@ pipeline {
                                 -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
                                 -e HOST_METRICS_FILE=/var/lib/ats-metrics/metrics.json \\
                                 \${SERIAL_ENV} \\
-                                ${params.ATS_NODE_TEST_IMAGE}
-                            
-                            EXIT_CODE=\$?
+                                ${params.ATS_NODE_TEST_IMAGE} || EXIT_CODE=\$?
                             
                             # Copy results back from volume to workspace
                             echo ""
@@ -492,21 +491,40 @@ pipeline {
                             -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
                             -e HOST_METRICS_FILE=/var/lib/ats-metrics/metrics.json \\
                             \${SERIAL_ENV} \\
-                            ${params.ATS_NODE_TEST_IMAGE}
-                        
-                            EXIT_CODE=\$?
+                            ${params.ATS_NODE_TEST_IMAGE} || EXIT_CODE=\$?
                         fi
                         
                         if [ \$EXIT_CODE -eq 0 ]; then
                             echo "✅ Test execution completed successfully"
+                        elif [ \$EXIT_CODE -eq 1 ]; then
+                            echo "⚠️  Test execution completed with test failures (exit code 1) — will mark build UNSTABLE"
                         else
                             echo "❌ Test execution failed with exit code: \$EXIT_CODE"
                         fi
                         
                         echo "📊 Results:"
                         ls -la ${RESULTS_DIR}/ || echo "   No results found"
-                        exit \$EXIT_CODE
+                        
+                        # Persist exit code so pipeline can set UNSTABLE (1) vs FAILURE (2+); stage must not fail so Archive runs
+                        echo \$EXIT_CODE > ${RESULTS_DIR}/.exitcode
+                        exit 0
                     """
+                    script {
+                        if (!fileExists("${RESULTS_DIR}/.exitcode")) {
+                            echo "⚠️  .exitcode not found, assuming run error"
+                            currentBuild.result = 'FAILURE'
+                            error("Test stage did not produce .exitcode")
+                            return
+                        }
+                        def exitCode = readFile("${RESULTS_DIR}/.exitcode").trim().toInteger()
+                        if (exitCode == 1) {
+                            currentBuild.result = 'UNSTABLE'
+                            echo "⚠️  Build set to UNSTABLE (some tests failed; results archived)"
+                        } else if (exitCode != 0) {
+                            currentBuild.result = 'FAILURE'
+                            error("Test container exited with code ${exitCode}")
+                        }
+                    }
                 }
             }
         }
