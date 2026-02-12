@@ -373,7 +373,7 @@ static esp_err_t tft_spi_init(void)
 
 /* TEST_PASS: 1 = pass build (UART "Hello RKTech", LCD "Welcome RKTech"), 0 = fail build (UART/LCD PicoPiece) */
 #ifndef TEST_PASS
-#define TEST_PASS 0
+#define TEST_PASS 1
 #endif
 
 void app_main(void)
