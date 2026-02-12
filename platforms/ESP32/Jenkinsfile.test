@@ -566,7 +566,6 @@ pipeline {
                 }
             }
         }
-    }
 
         stage('Update Grafana Metrics') {
             agent { label "${params.ATS_NODE_LABEL}" }
