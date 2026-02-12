@@ -371,9 +371,18 @@ static esp_err_t tft_spi_init(void)
     return ret;
 }
 
+/* TEST_PASS: 1 = pass build (UART "Hello RKTech", LCD "Welcome RKTech"), 0 = fail build (UART/LCD PicoPiece) */
+#ifndef TEST_PASS
+#define TEST_PASS 0
+#endif
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Hello RKTech");   /* v1.1 - used for test pass/fail */
+#if (TEST_PASS == 1)
+    ESP_LOGI(TAG, "Hello RKTech");
+#else
+    ESP_LOGI(TAG, "Hello PicoPiece");
+#endif
     ESP_LOGI(TAG, "ATS ESP32 Firmware Demo");
     ESP_LOGI(TAG, "Build successful!");
 
@@ -396,11 +405,15 @@ void app_main(void)
         ESP_LOGI(TAG, "LCD Blue");
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        /* Bước 2: hiển thị text RKTech trên nền đen */
+        /* Bước 2: hiển thị text (RKTech = pass, PicoPiece = fail) */
         tft_fill_screen_rgb565(0x0000);   /* Black background */
 
-        /* Dòng 1: "Welcome RKTech" – căn giữa, chữ trắng */
+#if (TEST_PASS == 1)
         const char *line1 = "Welcome RKTech";
+#else
+        const char *line1 = "Welcome PicoPiece";
+#endif
+        /* Dòng 1 – căn giữa, chữ trắng */
         int w1 = tft_string_width_px(line1);
         int x1 = (TFT_WIDTH - w1) / 2;
         int y1 = TFT_HEIGHT / 2 - FONT5X7_H - 5;
