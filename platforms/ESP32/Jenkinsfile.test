@@ -617,8 +617,10 @@ pipeline {
                                 -v /dev:/dev \\
                                 -v /sys/class/gpio:/sys/class/gpio:ro \\
                                 -v /dev/gpiomem:/dev/gpiomem \\
+                                -v /var/lib/ats-metrics:/var/lib/ats-metrics \\
                                 -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                                 -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                                -e HOST_METRICS_FILE=/var/lib/ats-metrics/metrics.json \\
                                 ${params.ATS_NODE_TEST_IMAGE} || EXIT_CODE=\$?
                             
                             # Copy results back from volume to workspace
@@ -691,8 +693,10 @@ pipeline {
                                 -v /dev:/dev \\
                                 -v /sys/class/gpio:/sys/class/gpio:ro \\
                                 -v /dev/gpiomem:/dev/gpiomem \\
+                                -v /var/lib/ats-metrics:/var/lib/ats-metrics \\
                                 -e MANIFEST_PATH=/workspace/ats-manifest.yaml \\
                                 -e RESULTS_DIR=/workspace/${RESULTS_DIR} \\
+                                -e HOST_METRICS_FILE=/var/lib/ats-metrics/metrics.json \\
                                 ${params.ATS_NODE_TEST_IMAGE} || EXIT_CODE=\$?
                         fi
                         
@@ -783,6 +787,35 @@ pipeline {
                             error("Results directory not found - cannot archive artifacts")
                         }
                     }
+                }
+            }
+        }
+    }
+
+        stage('Update Grafana Metrics') {
+            agent { label "${params.ATS_NODE_LABEL}" }
+            steps {
+                dir(WORKSPACE_DIR) {
+                    sh """
+                        echo "📊 Updating Prometheus metrics for Grafana..."
+                        
+                        METRICS_SRC="${RESULTS_DIR}/metrics.json"
+                        METRICS_DST="/var/lib/ats-metrics/metrics.json"
+                        
+                        if [ -f "\${METRICS_SRC}" ]; then
+                            # Ensure destination directory exists with correct permissions
+                            sudo mkdir -p /var/lib/ats-metrics
+                            sudo chown -R \$(whoami):\$(id -gn) /var/lib/ats-metrics 2>/dev/null || true
+                            
+                            cp "\${METRICS_SRC}" "\${METRICS_DST}"
+                            echo "✅ Metrics copied to \${METRICS_DST}"
+                            echo "   Contents:"
+                            cat "\${METRICS_DST}"
+                        else
+                            echo "⚠️  metrics.json not found in \${METRICS_SRC}"
+                            echo "   Grafana metrics will not be updated this run"
+                        fi
+                    """
                 }
             }
         }
