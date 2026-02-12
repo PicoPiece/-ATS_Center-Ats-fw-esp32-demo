@@ -790,7 +790,6 @@ pipeline {
                 }
             }
         }
-    }
 
         stage('Update Grafana Metrics') {
             agent { label "${params.ATS_NODE_LABEL}" }
@@ -819,8 +818,8 @@ pipeline {
                 }
             }
         }
-    }
 
+    }
     post {
         success {
             echo "✅ Firmware tested successfully on ATS node"
