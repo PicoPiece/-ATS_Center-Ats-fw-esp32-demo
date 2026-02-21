@@ -46,8 +46,10 @@ pipeline {
                 sh '''
                     export ESPRESSIF_HOME=/home/jenkins/.espressif
                     . /opt/esp/idf/export.sh
-                    rm -rf build
-                    idf.py set-target esp32
+                    if [ ! -f build/CMakeCache.txt ]; then
+                        rm -rf build
+                        idf.py set-target esp32
+                    fi
                     idf.py build
                     cp build/*.bin ${FW_ARTIFACT}
                 '''
