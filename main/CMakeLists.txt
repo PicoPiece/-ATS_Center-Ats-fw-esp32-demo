@@ -5,12 +5,11 @@ endif()
 
 set(MY_REQUIRES nvs_flash esp_wifi esp_event esp_netif lwip)
 
-# IDF 5.x: use split drivers + esp_smartconfig from registry (idf_component.yml)
-# IDF 4.4+: use split drivers; older: use driver + esp_smartconfig from tree
+# IDF 5.x / 4.4+: use split drivers; smartconfig is inside esp_wifi in 5.2
 idf_build_get_property(idf_ver_major IDF_VERSION_MAJOR)
 idf_build_get_property(idf_ver_minor IDF_VERSION_MINOR)
 if(idf_ver_major GREATER_EQUAL 5 OR idf_ver_minor GREATER_EQUAL 4)
-    list(APPEND MY_REQUIRES esp_driver_spi esp_driver_gpio esp_smartconfig)
+    list(APPEND MY_REQUIRES esp_driver_spi esp_driver_gpio)
 else()
     list(APPEND MY_REQUIRES driver esp_smartconfig)
 endif()
