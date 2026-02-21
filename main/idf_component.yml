@@ -1,0 +1,3 @@
+# ESP-IDF 5.x: esp_smartconfig moved to Component Registry
+dependencies:
+  espressif/esp_smartconfig: "*"
