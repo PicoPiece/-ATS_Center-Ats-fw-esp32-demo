@@ -4,9 +4,16 @@
 #include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_smartconfig.h"
+#include "esp_sntp.h"
 
 static const char *TAG = "ats-fw-demo";
 
@@ -391,29 +398,232 @@ static esp_err_t tft_spi_init(void)
     return ret;
 }
 
-/* TEST_PASS: 1 = pass build (UART "Hello RKTech", LCD "Welcome RKTech"), 0 = fail build (UART/LCD PicoPiece) */
+/* TEST_PASS: 1 = pass build (UART "Hello RKTech", LCD "Welcome RKTech"), 0 = fail build */
 #ifndef TEST_PASS
 #define TEST_PASS 1
 #endif
 
-/* Real-time clock: init system time from a fixed start (RTC runs from here; no NTP). */
-static void rtc_init_default(void)
+/* ================================================================
+ * WiFi / SmartConfig (ESP-Touch) / NTP
+ * ================================================================ */
+
+#define WIFI_NVS_NS           "wifi"
+#define WIFI_NVS_SSID_KEY     "ssid"
+#define WIFI_NVS_PASS_KEY     "pass"
+#define WIFI_CONN_TIMEOUT_MS  15000   /* 15 s – connect with saved credentials */
+#define SC_TIMEOUT_MS         90000   /* 90 s – SmartConfig (ESP-Touch) window  */
+#define NTP_TIMEOUT_MS        10000   /* 10 s – wait for first NTP sync         */
+#define NTP_SERVER            "pool.ntp.org"
+/* POSIX TZ: offset sign is opposite of common notation.
+ * "ICT-7" means local = UTC + 7 h  (Vietnam / Indochina Time). */
+#define TZ_VIETNAM            "ICT-7"
+
+#define EVT_WIFI_OK   BIT0
+#define EVT_SC_GOT    BIT1
+#define EVT_NTP_OK    BIT2
+
+static EventGroupHandle_t s_evt_grp;
+static char s_pending_ssid[32];
+static char s_pending_pass[64];
+
+static void wifi_event_handler(void *arg, esp_event_base_t base,
+                               int32_t id, void *data)
 {
-    setenv("TZ", "UTC+7", 1);  /* Vietnam */
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(s_evt_grp, EVT_WIFI_OK);
+    } else if (base == SC_EVENT) {
+        if (id == SC_EVENT_GOT_SSID_PSWD) {
+            smartconfig_event_got_ssid_pswd_t *e =
+                (smartconfig_event_got_ssid_pswd_t *)data;
+            memcpy(s_pending_ssid, e->ssid,     sizeof(s_pending_ssid));
+            memcpy(s_pending_pass, e->password, sizeof(s_pending_pass));
+            xEventGroupSetBits(s_evt_grp, EVT_SC_GOT);
+        } else if (id == SC_EVENT_SEND_ACK_DONE) {
+            esp_smartconfig_stop();
+        }
+    }
+}
+
+static void ntp_sync_cb(struct timeval *tv)
+{
+    if (s_evt_grp) {
+        xEventGroupSetBits(s_evt_grp, EVT_NTP_OK);
+    }
+}
+
+static void nvs_save_wifi(const char *ssid, const char *pass)
+{
+    nvs_handle_t h;
+    if (nvs_open(WIFI_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, WIFI_NVS_SSID_KEY, ssid);
+        nvs_set_str(h, WIFI_NVS_PASS_KEY, pass);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "WiFi credentials saved to NVS (SSID: %s)", ssid);
+    }
+}
+
+static bool nvs_load_wifi(char ssid[32], char pass[64])
+{
+    nvs_handle_t h;
+    if (nvs_open(WIFI_NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t sl = 32, pl = 64;
+    bool ok = (nvs_get_str(h, WIFI_NVS_SSID_KEY, ssid, &sl) == ESP_OK &&
+               nvs_get_str(h, WIFI_NVS_PASS_KEY, pass, &pl) == ESP_OK &&
+               strlen(ssid) > 0);
+    nvs_close(h);
+    return ok;
+}
+
+/* Show a one-line status message at the top of the LCD (white text). */
+static void lcd_show_wifi_status(const char *msg)
+{
+    tft_fill_rect(0, 2, TFT_WIDTH, FONT5X7_H + 2, 0x0000);
+    int w = tft_string_width_px(msg);
+    tft_draw_string_5x7((TFT_WIDTH - w) / 2, 3, msg, 0xFFFF);
+}
+
+/*
+ * Full provisioning flow:
+ *   1. Try saved credentials from NVS → connect directly.
+ *   2. On failure (or no saved creds) → show SmartConfig/ESP-Touch screen.
+ *   3. When WiFi is up → sync NTP, set timezone to Vietnam (UTC+7).
+ * Returns true  → NTP synced (real internet time).
+ * Returns false → timeout / failure, caller should use RTC default time.
+ */
+static bool wifi_provision_and_sync(void)
+{
+    s_evt_grp = xEventGroupCreate();
+
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&init_cfg);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL);
+    esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID,    wifi_event_handler, NULL);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    bool wifi_ok = false;
+    char ssid[32] = {0}, pass[64] = {0};
+
+    if (nvs_load_wifi(ssid, pass)) {
+        ESP_LOGI(TAG, "Trying saved WiFi SSID: %s", ssid);
+        lcd_show_wifi_status("Connecting WiFi...");
+
+        wifi_config_t wcfg = {0};
+        strlcpy((char *)wcfg.sta.ssid,     ssid, sizeof(wcfg.sta.ssid));
+        strlcpy((char *)wcfg.sta.password, pass, sizeof(wcfg.sta.password));
+        esp_wifi_set_config(WIFI_IF_STA, &wcfg);
+        esp_wifi_connect();
+
+        EventBits_t b = xEventGroupWaitBits(s_evt_grp, EVT_WIFI_OK,
+                                             pdFALSE, pdFALSE,
+                                             pdMS_TO_TICKS(WIFI_CONN_TIMEOUT_MS));
+        wifi_ok = (b & EVT_WIFI_OK) != 0;
+        if (!wifi_ok) {
+            ESP_LOGW(TAG, "Saved WiFi failed, launching SmartConfig...");
+            esp_wifi_disconnect();
+        }
+    }
+
+    if (!wifi_ok) {
+        /* SmartConfig / ESP-Touch instruction screen */
+        tft_fill_screen_rgb565(0x0000);
+        const char *t0 = "WiFi Setup";
+        tft_draw_string_5x7((TFT_WIDTH - tft_string_width_px(t0)) / 2, 12, t0, 0xFFE0);
+        const char *t1 = "1. Install ESP-Touch";
+        tft_draw_string_5x7(2, 28, t1, 0xFFFF);
+        const char *t2 = "2. Open app on phone";
+        tft_draw_string_5x7(2, 40, t2, 0xFFFF);
+        const char *t3 = "3. Enter SSID/Pass";
+        tft_draw_string_5x7(2, 52, t3, 0xFFFF);
+        const char *t4 = "4. Tap Connect";
+        tft_draw_string_5x7(2, 64, t4, 0xFFFF);
+        lcd_show_wifi_status("Waiting ESP-Touch...");
+
+        ESP_LOGI(TAG, "SmartConfig (ESP-Touch) started, waiting...");
+        esp_smartconfig_set_type(SC_TYPE_ESPTOUCH);
+        smartconfig_start_config_t sc_cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+        esp_smartconfig_start(&sc_cfg);
+
+        EventBits_t sc_bits = xEventGroupWaitBits(s_evt_grp, EVT_SC_GOT,
+                                                   pdFALSE, pdFALSE,
+                                                   pdMS_TO_TICKS(SC_TIMEOUT_MS));
+        if (!(sc_bits & EVT_SC_GOT)) {
+            ESP_LOGW(TAG, "SmartConfig timeout — using RTC default time");
+            esp_smartconfig_stop();
+            vEventGroupDelete(s_evt_grp);
+            s_evt_grp = NULL;
+            return false;
+        }
+
+        /* Got credentials from phone — now connect */
+        xEventGroupClearBits(s_evt_grp, EVT_WIFI_OK);
+        esp_wifi_disconnect();
+        wifi_config_t wcfg = {0};
+        strlcpy((char *)wcfg.sta.ssid,     s_pending_ssid, sizeof(wcfg.sta.ssid));
+        strlcpy((char *)wcfg.sta.password, s_pending_pass, sizeof(wcfg.sta.password));
+        esp_wifi_set_config(WIFI_IF_STA, &wcfg);
+        esp_wifi_connect();
+        lcd_show_wifi_status("Connecting WiFi...");
+
+        EventBits_t c = xEventGroupWaitBits(s_evt_grp, EVT_WIFI_OK,
+                                             pdFALSE, pdFALSE,
+                                             pdMS_TO_TICKS(WIFI_CONN_TIMEOUT_MS));
+        if (!(c & EVT_WIFI_OK)) {
+            ESP_LOGW(TAG, "WiFi connect failed after SmartConfig");
+            vEventGroupDelete(s_evt_grp);
+            s_evt_grp = NULL;
+            return false;
+        }
+        nvs_save_wifi(s_pending_ssid, s_pending_pass);
+    }
+
+    /* WiFi connected — sync NTP */
+    lcd_show_wifi_status("Syncing NTP...");
+    ESP_LOGI(TAG, "WiFi connected. Syncing NTP via %s...", NTP_SERVER);
+
+    setenv("TZ", TZ_VIETNAM, 1);
     tzset();
-    struct tm t = { 0 };
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, (char *)NTP_SERVER);
+    esp_sntp_set_time_sync_notification_cb(ntp_sync_cb);
+    esp_sntp_init();
+
+    EventBits_t ntp_bits = xEventGroupWaitBits(s_evt_grp, EVT_NTP_OK,
+                                                pdFALSE, pdFALSE,
+                                                pdMS_TO_TICKS(NTP_TIMEOUT_MS));
+    bool ntp_ok = (ntp_bits & EVT_NTP_OK) != 0;
+    if (ntp_ok) {
+        ESP_LOGI(TAG, "NTP synced (Vietnam UTC+7)");
+    } else {
+        ESP_LOGW(TAG, "NTP sync timeout — using RTC default time");
+    }
+
+    vEventGroupDelete(s_evt_grp);
+    s_evt_grp = NULL;
+    return ntp_ok;
+}
+
+/* Fallback: set a fixed starting time when no NTP is available.
+ * The internal FreeRTOS tick counter keeps counting from here. */
+static void rtc_use_default(void)
+{
+    setenv("TZ", TZ_VIETNAM, 1);
+    tzset();
+    struct tm t = {0};
     t.tm_year = 2025 - 1900;
-    t.tm_mon  = 2 - 1;
+    t.tm_mon  = 2 - 1;   /* February */
     t.tm_mday = 12;
-    t.tm_hour = 0;
-    t.tm_min  = 0;
-    t.tm_sec  = 0;
     time_t sec = mktime(&t);
     if (sec != (time_t)-1) {
         struct timeval tv = { .tv_sec = sec, .tv_usec = 0 };
         settimeofday(&tv, NULL);
-        ESP_LOGI(TAG, "RTC set to 2025-02-12 00:00:00 (UTC+7)");
     }
+    ESP_LOGI(TAG, "RTC default set: 2025-02-12 00:00:00 (UTC+7)");
 }
 
 void app_main(void)
@@ -426,7 +636,13 @@ void app_main(void)
     ESP_LOGI(TAG, "ATS ESP32 Firmware Demo");
     ESP_LOGI(TAG, "Build successful!");
 
-    rtc_init_default();
+    /* NVS must be initialized before WiFi (WiFi uses NVS internally). */
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
 
     esp_err_t err = tft_spi_init();
     if (err == ESP_OK) {
@@ -434,41 +650,38 @@ void app_main(void)
                  TFT_SCK_GPIO, TFT_MOSI_GPIO, TFT_CS_GPIO, TFT_RST_GPIO, TFT_DC_GPIO);
         tft_display_init();
 
-        /* Step 1: color test – red -> green -> blue, 1s each */
-        tft_fill_screen_rgb565(0xF800);   /* Red */
+        /* Step 1: color test – red → green → blue, 1 s each */
+        tft_fill_screen_rgb565(0xF800);
         ESP_LOGI(TAG, "LCD Red");
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        tft_fill_screen_rgb565(0x07E0);   /* Green */
+        tft_fill_screen_rgb565(0x07E0);
         ESP_LOGI(TAG, "LCD Green");
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        tft_fill_screen_rgb565(0x001F);   /* Blue */
+        tft_fill_screen_rgb565(0x001F);
         ESP_LOGI(TAG, "LCD Blue");
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        /* Step 2: show text (RKTech = pass, PicoPiece = fail) */
-        tft_fill_screen_rgb565(0x0000);   /* Black background */
+        /* Step 2: welcome text (shown for 2 s) */
+        tft_fill_screen_rgb565(0x0000);
 
 #if (TEST_PASS == 1)
         const char *line1 = "Welcome RKTech";
 #else
         const char *line1 = "Welcome PicoPiece";
 #endif
-        /* Line 1 – centered, white */
         int w1 = tft_string_width_px(line1);
         int x1 = (TFT_WIDTH - w1) / 2;
         int y1 = TFT_HEIGHT / 2 - FONT5X7_H - 5;
         tft_draw_string_5x7(x1, y1, line1, 0xFFFF);
 
-        /* Line 2: "ATS_Demo" – centered, yellow */
         const char *line2 = "ATS_Demo";
         int w2 = tft_string_width_px(line2);
         int x2 = (TFT_WIDTH - w2) / 2;
         int y2 = TFT_HEIGHT / 2 - 1;
         tft_draw_string_5x7(x2, y2, line2, 0xFFE0);
 
-        /* Line 3: "ESP32_IoT_LCD" – centered, cyan */
         const char *line3 = "ESP32_IoT_LCD";
         int w3 = tft_string_width_px(line3);
         int x3 = (TFT_WIDTH - w3) / 2;
@@ -476,31 +689,46 @@ void app_main(void)
         tft_draw_string_5x7(x3, y3, line3, 0x07FF);
 
         ESP_LOGI(TAG, "Text displayed on LCD");
+        vTaskDelay(pdMS_TO_TICKS(2000));
 
-        /* Real-time clock: date and time on LCD, update every second (scale 2 for readability). */
+        /* Step 3: WiFi provisioning (SmartConfig / ESP-Touch) + NTP sync */
+        bool ntp_synced = wifi_provision_and_sync();
+        if (!ntp_synced) {
+            rtc_use_default();   /* fallback: fixed start time */
+        }
+
+        /* Step 4: real-time clock display, updated every second */
         const int clock_scale = 2;
-        const int date_y = 48;
-        const int time_y = 70;
-        const int line_h = FONT5X7_H * clock_scale + 2;
-        tft_fill_rect(0, date_y - 2, TFT_WIDTH, line_h * 2 + 4, 0x0000);  /* clear clock area */
-        const char *title = "Real-time clock";
-        int tw = tft_string_width_px(title);
-        tft_draw_string_5x7((TFT_WIDTH - tw) / 2, 28, title, 0x07FF);
+        const int title_y     = 10;
+        const int date_y      = 48;
+        const int time_y      = 70;
+        const int line_h      = FONT5X7_H * clock_scale + 2;
+
+        tft_fill_screen_rgb565(0x0000);
+        const char *clk_title = "Real-time clock";
+        int ctw = tft_string_width_px(clk_title);
+        tft_draw_string_5x7((TFT_WIDTH - ctw) / 2, title_y, clk_title, 0x07FF);
+
+        /* Source indicator: "NTP" (green) or "RTC" (yellow) in top-right corner */
+        const char *src_label = ntp_synced ? "NTP" : "RTC";
+        uint16_t    src_color = ntp_synced ? 0x07E0 : 0xFFE0;
+        int src_w = tft_string_width_px(src_label);
+        tft_draw_string_5x7(TFT_WIDTH - src_w - 2, title_y, src_label, src_color);
 
         char date_buf[16];
         char time_buf[16];
         while (1) {
             time_t now = time(NULL);
-            struct tm tm;
-            if (localtime_r(&now, &tm) != NULL) {
+            struct tm tm_info;
+            if (localtime_r(&now, &tm_info) != NULL) {
                 snprintf(date_buf, sizeof(date_buf), "%04d-%02d-%02d",
-                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+                         tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday);
                 snprintf(time_buf, sizeof(time_buf), "%02d:%02d:%02d",
-                         tm.tm_hour, tm.tm_min, tm.tm_sec);
-                int dw = tft_string_width_scaled(date_buf, clock_scale);
-                int xd = (TFT_WIDTH - dw) / 2;
+                         tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+                int dw  = tft_string_width_scaled(date_buf, clock_scale);
+                int xd  = (TFT_WIDTH - dw) / 2;
                 int tw2 = tft_string_width_scaled(time_buf, clock_scale);
-                int xt = (TFT_WIDTH - tw2) / 2;
+                int xt  = (TFT_WIDTH - tw2) / 2;
                 tft_fill_rect(0, date_y - 2, TFT_WIDTH, line_h * 2 + 4, 0x0000);
                 tft_draw_string_scaled(xd, date_y, date_buf, 0xFFFF, clock_scale);
                 tft_draw_string_scaled(xt, time_y, time_buf, 0xFFE0, clock_scale);
