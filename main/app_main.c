@@ -108,7 +108,7 @@ static const uint8_t font_5x7_lower[26][5] = {
     { 0x44, 0x64, 0x54, 0x4C, 0x44 }, /* z */
 };
 
-/* TFT 128x160 SPI – dùng VSPI (SPI3) vì chân 18/23/5 là native VSPI trên ESP32 */
+/* TFT 128x160 SPI – use VSPI (SPI3); pins 18/23/5 are native VSPI on ESP32 */
 #if defined(SPI3_HOST)
 #define TFT_SPI_HOST         SPI3_HOST   /* VSPI – native pins: SCK=18, MOSI=23, CS=5 */
 #elif defined(VSPI_HOST)
@@ -118,7 +118,7 @@ static const uint8_t font_5x7_lower[26][5] = {
 #endif
 #define TFT_SCK_GPIO         18  /* SCLK */
 #define TFT_MOSI_GPIO        23  /* SDA */
-#define TFT_CS_GPIO          5   /* CS = 5 (mẫu dùng 5; nếu board cũ dùng 4 thì đổi lại) */
+#define TFT_CS_GPIO          5   /* CS = 5 (sample uses 5; if older board uses 4, change here) */
 #define TFT_RST_GPIO         15  /* RST */
 #define TFT_DC_GPIO          32  /* DC/AO */
 #define TFT_SPI_CLOCK_HZ     (TFT_SPI_CLOCK_SLOW ? (4 * 1000 * 1000) : (10 * 1000 * 1000))
@@ -195,7 +195,7 @@ static void tft_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     tft_write_cmd(ST77XX_RAMWR);
 }
 
-/* Fill full screen with RGB565. Một số panel cần low byte trước: đổi thành buf[i]=lo, buf[i+1]=hi */
+/* Fill full screen with RGB565. Some panels need low byte first: use buf[i]=lo, buf[i+1]=hi */
 static void tft_fill_screen_rgb565(uint16_t color)
 {
     uint8_t hi = (uint8_t)(color >> 8), lo = (uint8_t)(color & 0xFF);
@@ -224,7 +224,7 @@ static void tft_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t fg, in
         col = font_5x7[0];
     }
     uint8_t fg_hi = (uint8_t)(fg >> 8), fg_lo = (uint8_t)(fg & 0xFF);
-    /* Mỗi pixel font → khối scale×scale pixel trên LCD */
+    /* Each font pixel → scale×scale pixel block on LCD */
     for (int cx = 0; cx < FONT5X7_W; cx++) {
         for (int row = 0; row < FONT5X7_H; row++) {
             if ((col[cx] >> row) & 1) {
@@ -269,7 +269,7 @@ static int tft_draw_string_5x7(uint16_t x, uint16_t y, const char *s, uint16_t f
 static int tft_string_width_px(const char *s)
 { return tft_string_width_scaled(s, 1); }
 
-/* Nếu màn vẫn nhiễu/sai màu, thử: (1) Đổi INVON <-> INVOFF  (2) Đổi madctl: 0xC8, 0xA8, 0x68, 0xC0 */
+/* If display is noisy/wrong colors, try: (1) Swap INVON <-> INVOFF  (2) Try madctl: 0xC8, 0xA8, 0x68, 0xC0 */
 static void tft_display_init(void)
 {
     tft_hw_reset();
@@ -312,7 +312,7 @@ static void tft_display_init(void)
     tft_write_data(&vm, 1);
 
     tft_write_cmd(ST77XX_INVOFF);  /* INITR_GREENTAB: no invert */
-    /* MADCTL 0xA8 = setRotation(1) green tab: MY|MV|BGR (giống mẫu ESP32TFT_128x160B) */
+    /* MADCTL 0xA8 = setRotation(1) green tab: MY|MV|BGR (same as sample ESP32TFT_128x160B) */
     uint8_t madctl = 0xA8;
     tft_write_cmd(ST77XX_MADCTL);
     tft_write_data(&madctl, 1);
@@ -362,7 +362,7 @@ static esp_err_t tft_spi_init(void)
         .mode = 0,                                   /* SPI mode 0 (CPOL=0, CPHA=0) */
         .clock_speed_hz = TFT_SPI_CLOCK_HZ,
         .spics_io_num = TFT_CS_GPIO,
-        .flags = SPI_DEVICE_NO_DUMMY,                /* giống TFT_eSPI; không thêm dummy cycle */
+        .flags = SPI_DEVICE_NO_DUMMY,                /* same as TFT_eSPI; no dummy cycle */
         .queue_size = 1,
     };
     esp_err_t ret = spi_bus_add_device(TFT_SPI_HOST, &dev_cfg, &tft_spi_handle);
@@ -383,7 +383,7 @@ void app_main(void)
                  TFT_SCK_GPIO, TFT_MOSI_GPIO, TFT_CS_GPIO, TFT_RST_GPIO, TFT_DC_GPIO);
         tft_display_init();
 
-        /* Bước 1: test màu – đỏ -> xanh lá -> xanh dương, mỗi màu 1s */
+        /* Step 1: color test – red -> green -> blue, 1s each */
         tft_fill_screen_rgb565(0xF800);   /* Red */
         ESP_LOGI(TAG, "LCD Red");
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -396,24 +396,24 @@ void app_main(void)
         ESP_LOGI(TAG, "LCD Blue");
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        /* Bước 2: hiển thị text RKTech trên nền đen */
+        /* Step 2: show RKTech text on black background */
         tft_fill_screen_rgb565(0x0000);   /* Black background */
 
-        /* Dòng 1: "Welcome RKTech" – căn giữa, chữ trắng */
+        /* Line 1: "Welcome RKTech" – centered, white */
         const char *line1 = "Welcome RKTech";
         int w1 = tft_string_width_px(line1);
         int x1 = (TFT_WIDTH - w1) / 2;
         int y1 = TFT_HEIGHT / 2 - FONT5X7_H - 5;
         tft_draw_string_5x7(x1, y1, line1, 0xFFFF);
 
-        /* Dòng 2: "ATS_Demo" – căn giữa, chữ vàng */
+        /* Line 2: "ATS_Demo" – centered, yellow */
         const char *line2 = "ATS_Demo";
         int w2 = tft_string_width_px(line2);
         int x2 = (TFT_WIDTH - w2) / 2;
         int y2 = TFT_HEIGHT / 2 - 1;
         tft_draw_string_5x7(x2, y2, line2, 0xFFE0);
 
-        /* Dòng 3: "ESP32_IoT_LCD" – căn giữa, chữ cyan */
+        /* Line 3: "ESP32_IoT_LCD" – centered, cyan */
         const char *line3 = "ESP32_IoT_LCD";
         int w3 = tft_string_width_px(line3);
         int x3 = (TFT_WIDTH - w3) / 2;
