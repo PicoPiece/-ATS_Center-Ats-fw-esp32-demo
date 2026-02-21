@@ -5,9 +5,9 @@ endif()
 
 set(MY_REQUIRES nvs_flash esp_wifi esp_event esp_netif lwip)
 
-# IDF 5.4+: esp_smartconfig removed, SPI/GPIO split into separate components
-# IDF 5.2:  esp_smartconfig exists, SPI/GPIO inside 'driver'
-if(IDF_VERSION_MINOR GREATER_EQUAL 4)
+# Detect IDF version via build property (works in both 5.2 and 5.4+)
+idf_build_get_property(idf_ver_minor IDF_VERSION_MINOR)
+if(idf_ver_minor GREATER_EQUAL 4)
     list(APPEND MY_REQUIRES esp_driver_spi esp_driver_gpio)
 else()
     list(APPEND MY_REQUIRES driver esp_smartconfig)

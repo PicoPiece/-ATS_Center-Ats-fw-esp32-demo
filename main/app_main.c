@@ -13,7 +13,9 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_smartconfig.h"
+#include "nvs.h"
 #include "esp_sntp.h"
+#include "esp_idf_version.h"
 
 static const char *TAG = "ats-fw-demo";
 
@@ -589,7 +591,7 @@ static bool wifi_provision_and_sync(void)
     setenv("TZ", TZ_VIETNAM, 1);
     tzset();
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, (char *)NTP_SERVER);
+    esp_sntp_setservername(0, NTP_SERVER);
     esp_sntp_set_time_sync_notification_cb(ntp_sync_cb);
     esp_sntp_init();
 
