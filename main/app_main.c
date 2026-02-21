@@ -715,8 +715,8 @@ void app_main(void)
         int src_w = tft_string_width_px(src_label);
         tft_draw_string_5x7(TFT_WIDTH - src_w - 2, title_y, src_label, src_color);
 
-        char date_buf[16];
-        char time_buf[16];
+        char date_buf[32];
+        char time_buf[32];
         while (1) {
             time_t now = time(NULL);
             struct tm tm_info;
