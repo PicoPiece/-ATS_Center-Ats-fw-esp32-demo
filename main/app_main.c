@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -212,6 +214,24 @@ static void tft_fill_screen_rgb565(uint16_t color)
     }
 }
 
+/* Fill rectangle (x,y) size (w,h) with RGB565 color. */
+static void tft_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)
+{
+    if (w == 0 || h == 0) return;
+    uint8_t hi = (uint8_t)(color >> 8), lo = (uint8_t)(color & 0xFF);
+    tft_set_window(x, y, x + w - 1, y + h - 1);
+    gpio_set_level(TFT_DC_GPIO, 1);
+    const size_t chunk = 512;
+    uint8_t buf[chunk];
+    for (size_t i = 0; i < chunk; i += 2) { buf[i] = hi; buf[i + 1] = lo; }
+    size_t total = (size_t)w * h * 2;
+    for (size_t sent = 0; sent < total; sent += chunk) {
+        size_t n = (total - sent) < chunk ? (total - sent) : chunk;
+        spi_transaction_t t = { .length = n * 8, .tx_buffer = buf };
+        spi_device_polling_transmit(tft_spi_handle, &t);
+    }
+}
+
 /* Draw one 5x7 character at (x,y) with scale factor, fg in RGB565. */
 static void tft_draw_char_scaled(uint16_t x, uint16_t y, char c, uint16_t fg, int scale)
 {
@@ -376,6 +396,26 @@ static esp_err_t tft_spi_init(void)
 #define TEST_PASS 1
 #endif
 
+/* Real-time clock: init system time from a fixed start (RTC runs from here; no NTP). */
+static void rtc_init_default(void)
+{
+    setenv("TZ", "UTC+7", 1);  /* Vietnam */
+    tzset();
+    struct tm t = { 0 };
+    t.tm_year = 2025 - 1900;
+    t.tm_mon  = 2 - 1;
+    t.tm_mday = 12;
+    t.tm_hour = 0;
+    t.tm_min  = 0;
+    t.tm_sec  = 0;
+    time_t sec = mktime(&t);
+    if (sec != (time_t)-1) {
+        struct timeval tv = { .tv_sec = sec, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+        ESP_LOGI(TAG, "RTC set to 2025-02-12 00:00:00 (UTC+7)");
+    }
+}
+
 void app_main(void)
 {
 #if (TEST_PASS == 1)
@@ -385,6 +425,8 @@ void app_main(void)
 #endif
     ESP_LOGI(TAG, "ATS ESP32 Firmware Demo");
     ESP_LOGI(TAG, "Build successful!");
+
+    rtc_init_default();
 
     esp_err_t err = tft_spi_init();
     if (err == ESP_OK) {
@@ -435,7 +477,34 @@ void app_main(void)
 
         ESP_LOGI(TAG, "Text displayed on LCD");
 
+        /* Real-time clock: date and time on LCD, update every second (scale 2 for readability). */
+        const int clock_scale = 2;
+        const int date_y = 48;
+        const int time_y = 70;
+        const int line_h = FONT5X7_H * clock_scale + 2;
+        tft_fill_rect(0, date_y - 2, TFT_WIDTH, line_h * 2 + 4, 0x0000);  /* clear clock area */
+        const char *title = "Real-time clock";
+        int tw = tft_string_width_px(title);
+        tft_draw_string_5x7((TFT_WIDTH - tw) / 2, 28, title, 0x07FF);
+
+        char date_buf[16];
+        char time_buf[16];
         while (1) {
+            time_t now = time(NULL);
+            struct tm tm;
+            if (localtime_r(&now, &tm) != NULL) {
+                snprintf(date_buf, sizeof(date_buf), "%04d-%02d-%02d",
+                         tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+                snprintf(time_buf, sizeof(time_buf), "%02d:%02d:%02d",
+                         tm.tm_hour, tm.tm_min, tm.tm_sec);
+                int dw = tft_string_width_scaled(date_buf, clock_scale);
+                int xd = (TFT_WIDTH - dw) / 2;
+                int tw2 = tft_string_width_scaled(time_buf, clock_scale);
+                int xt = (TFT_WIDTH - tw2) / 2;
+                tft_fill_rect(0, date_y - 2, TFT_WIDTH, line_h * 2 + 4, 0x0000);
+                tft_draw_string_scaled(xd, date_y, date_buf, 0xFFFF, clock_scale);
+                tft_draw_string_scaled(xt, time_y, time_buf, 0xFFE0, clock_scale);
+            }
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     } else {
